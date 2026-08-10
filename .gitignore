@@ -1,0 +1,13 @@
+chessboard_augment_testing/*
+chessboard_augment/*
+chessboard_augment_low_yaw/*
+boards/*
+checkpoints/*
+delft_dataset/*
+wood_frame/*
+*.jpg
+images_to_annotate/*
+*.ipynb
+temp/*
+*.txt
+
