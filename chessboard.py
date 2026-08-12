@@ -20,6 +20,79 @@ from augmentation import roughening_final_image_shifts_names, final_image_shifts
 post_processing_fns = [final_image_shifts_dict[fn] for fn in roughening_final_image_shifts_names]
 MAX_WORKERS = 4
 
+PIECES = ["pawn", "rook", "knight", "bishop", "queen", "king"]
+PIECES_STRATIFIED = []
+
+for loc_piece, nr in zip(PIECES, [8,2,2,2]): # we will always add a king
+	PIECES_STRATIFIED += [loc_piece] * nr
+
+scale_param = 0.015
+
+white_rgba = (0.9, 0.9, 0.9, 1.0)
+black_rgba = (0.1, 0.1, 0.1, 1.0)
+
+def create_mesh_piece(mesh_filepath, scale=[scale_param, scale_param, scale_param], color=[0.1, 0.1, 0.1, 1]):
+    visual_id = p.createVisualShape(
+        shapeType=p.GEOM_MESH,
+        fileName=mesh_filepath,
+        meshScale=scale,
+        rgbaColor=color
+    )
+    collision_id = p.createCollisionShape(
+        shapeType=p.GEOM_CYLINDER,
+        fileName=mesh_filepath,
+        meshScale=scale
+    )
+    return visual_id, collision_id
+
+
+def initialise_shapes_cache(scale_parameter=0.015):
+
+	shape_cache = {'w': {}, 'b': {}}
+	mesh_scale = [scale_parameter, scale_parameter, scale_parameter]
+
+	for loc_piece in PIECES:
+		fname = os.path.join(f"chess_models/{loc_piece}.obj")
+		col_id = p.createCollisionShape(
+            shapeType=p.GEOM_CYLINDER,
+            radius=0.015,
+            height=0.05
+        )
+
+		vis_id_black = p.createVisualShape(
+			shapeType=p.GEOM_MESH,
+			fileName=fname,
+			meshScale=mesh_scale,
+			rgbaColor=black_rgba
+			)
+
+		vis_id_white = p.createVisualShape(
+			shapeType=p.GEOM_MESH,
+			fileName=fname,
+			meshScale=mesh_scale,
+			rgbaColor=white_rgba
+			)
+
+		shape_cache['w'][loc_piece] = (vis_id_white, col_id)
+		shape_cache['b'][loc_piece] = (vis_id_black, col_id)
+
+	return shape_cache
+
+
+def place_piece_on_square(board_center, square_size, row, col, height, visual_id, collision_id):
+    """Calculates board coordinates (row, col) and spawns a piece."""
+    # Compute relative offset from board center (0,0 is corner)
+    x = board_center[0] + (col - 3.5) * square_size
+    y = board_center[1] + (row - 3.5) * square_size
+    z = board_center[2] + (height / 2.0)  # Offset by half-height so base rests on board
+    
+    body_id = p.createMultiBody(
+        baseMass=0.05,  # Non-zero mass allows physics interaction
+        baseCollisionShapeIndex=collision_id,
+        baseVisualShapeIndex=visual_id,
+        basePosition=[x, y, z]
+    )
+    return body_id
 
 def postprocess_img(img):
 	for func in post_processing_fns:
@@ -50,6 +123,7 @@ def composite_with_soft_edges(fg_board, bg_img, board_mask, blur_ksize=3):
     composite = (fg_board.astype(np.float32) * alpha) + (bg_img.astype(np.float32) * (1.0 - alpha))
     
     return composite.clip(0, 255).astype(np.uint8)
+
 
 def create_chessboard_images(nr_chessboards, nr_permutations, bg_images, white_file_list, dark_file_list, output_dir,
 	tile_size=0.05, nr_rows=4, img_h=480, img_w=640, verbose=1, panning_range=(0, 0.1), overwrite=False, yaw_range=(-90, 90),
@@ -93,9 +167,12 @@ def create_chessboard_images(nr_chessboards, nr_permutations, bg_images, white_f
 	divisor = 1+nr_chessboards // 10
 
 	start_idx = 0
-	if not overwrite:
-		print("chose not to overwrite pictures")
-		start_idx = max([int(x.split("_")[1]) for x in os.listdir(output_dir)]) + 1
+	# if not overwrite:
+	# 	print("chose not to overwrite pictures")
+	# 	start_idx = max([int(x.split("_")[1]) for x in os.listdir(output_dir)]) + 1
+
+	shape_cache = initialise_shapes_cache(scale_param)
+	board_center = [0., 0., 0.]
 
 	with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
 
@@ -178,6 +255,33 @@ def create_chessboard_images(nr_chessboards, nr_permutations, bg_images, white_f
 				    basePosition=[0.0, 0.0, 0]
 				    )
 
+				N_pieces_white = choice(range(4, 16))
+				N_pieces_black = choice(range(4, 16))
+				upright_orientation = p.getQuaternionFromEuler([np.radians(90), 0., 0.])
+
+				pieces_on_board_white = choices(PIECES_STRATIFIED, k=N_pieces_white) + ['king']
+				pieces_on_board_black = choices(PIECES_STRATIFIED, k=N_pieces_black) + ['king']
+				pieces_on_board = pieces_on_board_white + pieces_on_board_black
+				N = N_pieces_black + N_pieces_white + 2 # +2 because kings
+
+				occupied_spots = choices([(x,y) for x in range(8) for y in range(8)], k=N)
+				ids_of_pieces_on_board = []
+				for j_piece, (row, col) in enumerate(occupied_spots):
+					loc_color = 'w' if j_piece < N_pieces_white + 1 else 'b'
+					x = board_center[0] + (col - 3.5) * tile_size
+					y = board_center[1] + (row - 3.5) * tile_size
+					z = board_center[2] + (frame_thickness / 2.0)
+
+					loc_vis_id, loc_col_id = shape_cache[loc_color][pieces_on_board[j_piece]]
+					piece_id = p.createMultiBody(
+						baseMass=0.5,
+						baseVisualShapeIndex=loc_vis_id,
+						baseCollisionShapeIndex=loc_col_id,
+						basePosition=[x,y,z],
+						baseOrientation=upright_orientation,
+						)
+					ids_of_pieces_on_board.append(piece_id)
+
 				frame_texture = choice(bg_images_textures)
 				p.changeVisualShape(objectUniqueId=frame_id, linkIndex=-1, specularColor=[0.4, 0.4, 0.4], textureUniqueId=frame_texture)
 
@@ -190,7 +294,7 @@ def create_chessboard_images(nr_chessboards, nr_permutations, bg_images, white_f
 				    lightAmbientCoeff=0.35,              # <-- BOOST THIS (e.g. 0.35 -> 0.50) to lighten dark areas
 				    lightDiffuseCoeff=0.65,              # Softens direct harsh highlights
 				    lightSpecularCoeff=0.2,             # Regulates surface shine/varnish
-				    shadow=False,
+				    shadow=1,
 				    renderer=p.ER_BULLET_HARDWARE_OPENGL
 				)
 
@@ -214,20 +318,6 @@ def create_chessboard_images(nr_chessboards, nr_permutations, bg_images, white_f
 
 				# computing positions of pixels			
 				inner_board_projections = [project_world_pixel(x, proj_mat_arr, view_mat_arr, img_h, img_w) for x in inner_board_coordinates]
-
-				# pts_2d = np.array([(row, col) for (col, row) in inner_board_projections], dtype=np.int32)
-				# pts_2d = pts_2d.reshape((-1,1,2))
-				# cv2.polylines(final_img, [pts_2d], isClosed=True, color=(0,0,255), thickness=2)
-
-				# print(f"Tile size: {tile_size}")
-				# print(f"Calculated inner grid width (4 * tile_size): {tile_size * nr_rows}")
-				# print(f"Inner board 3D corners (World Space): {inner_board_coordinates[0]}")
-				# print(f"Projected 2D pixel corners: {inner_board_projections[0]}")
-
-				# frame_projections = [project_world_pixel(x, proj_mat_arr, view_mat_arr, img_h, img_w) for x in frame_coordinates]
-				# pts_2d = np.array([(row, col) for (col, row) in frame_projections], dtype=np.int32)
-				# pts_2d = pts_2d.reshape((-1,1,2))
-				# cv2.polylines(final_img, [pts_2d], isClosed=True, color=(255,0,0), thickness=2)
 
 				final_img = cv2.cvtColor(final_img, cv2.COLOR_RGB2BGR)
 				final_img = postprocess_img(final_img)
@@ -255,6 +345,9 @@ def create_chessboard_images(nr_chessboards, nr_permutations, bg_images, white_f
 				p.removeBody(frame_id)
 				target_pos = [0.0, 0.0, 0.0]
 
+				for idx in ids_of_pieces_on_board:
+					p.removeBody(idx)
+
 			for row in range(nr_rows):
 				for col in range(nr_cols):
 					p.removeBody(tiles[row][col])
@@ -263,12 +356,12 @@ def create_chessboard_images(nr_chessboards, nr_permutations, bg_images, white_f
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser()
 	parser.add_argument("--nr_chessboards", type=int)
-	parser.add_argument("--white_tiles", type=str)
-	parser.add_argument("--dark_tiles", type=str)
-	parser.add_argument("--bg_folder", type=str)
-	parser.add_argument("--nr_permutations", type=int)
+	parser.add_argument("--white_tiles", type=str, default=os.path.join("temp", "white_augment"))
+	parser.add_argument("--dark_tiles", type=str, default=os.path.join("temp", "brown_augment"))
+	parser.add_argument("--bg_folder", type=str, default=os.path.join("wood_frame"))
+	parser.add_argument("--nr_permutations", type=int, default=5)
 	parser.add_argument("--output_dir", type=str)
-	parser.add_argument("--nr_rows", type=int, default=4)
+	parser.add_argument("--nr_rows", type=int, default=8)
 	parser.add_argument("--overwrite", action=argparse.BooleanOptionalAction)
 	parser.add_argument("--yaw_range", nargs=2, type=int, default=(-90,90))
 

@@ -60,14 +60,14 @@ def apply_random_crop(img, fraction_range=(0.6, 0.8)):
     return cv2.resize(crop, (h, w))
 
 
-def add_gaussian_noise(img, std_range=(5, 25)):
+def add_gaussian_noise(img, std_range=(3, 9)):
     std = np.random.uniform(*std_range)
     noise = np.random.normal(0, std, img.shape).astype(np.float32)
     noisy_img = np.clip(img.astype(np.float32) + noise, 0, 255)
     return noisy_img.astype(np.uint8)
 
 
-def apply_gaussian_blur(img, ksize_range=(3, 12)):
+def apply_gaussian_blur(img, ksize_range=(3, 9)):
     # note : kernel size must be odd
     ksize = np.random.choice(range(ksize_range[0], ksize_range[1] + 1, 2))
     return cv2.GaussianBlur(img, (ksize, ksize), 0)
@@ -206,8 +206,7 @@ final_image_shifts_dict = dict(zip(final_image_shifts_names, final_image_shifts_
 roughening_final_image_shifts_names = ["blur", "synth_shadow", "gaussian_noise"]
 
 # function that prepares images. old version is in the gemini history, you can compare performance one day, for now I take its word for granted
-
-def _prepare_images(
+def _prepare_images_for_tiles(
     image_list, 
     images_per_batch, 
     transformation_list, 
@@ -232,6 +231,7 @@ def _prepare_images(
     # Directly sample a 2D matrix of indices
     if nr_batches is None:
         batch_indices = np.arange(len(image_list))
+        nr_batches = 1
     else:
         batch_indices = np.random.choice(len(image_list), size=(nr_batches, images_per_batch))
 
@@ -259,13 +259,26 @@ def _prepare_images(
 
     return new_images
 
+def _augment_image(image, multiplicaton_factor, transformation_list, transformation_params=None, subsample_transformations=True):
+
+    if transformation_params is None:
+        transformation_params = {k: {} for k in raw_image_shifts_names}
+
+    # Pre-fetch function pointers & parameters to avoid dictionary lookups in loops
+    tf_funcs = [raw_image_shift_dict[tr] for tr in transformation_list]
+    tf_kwargs = [transformation_params[tr] for tr in transformation_list]
+    num_tfs = len(transformation_list)
+
+    
+
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser()
 
 	parser.add_argument("--glob_query", type=str, help="glob query that is going to be used to pick images that we are going to transform")
 	parser.add_argument("--output_folder", type=str, help="folder where the final batch is going to be dumped")
-	parser.add_argument("--nr_batches", type=int, help="number of images")
-	parser.add_argument("--grid_size", type=int, help="grid size of a chessboard. For each choice we will produce grid_size^2 / 2 images per batch")
+    parser.add_argument("--augment_for_tiles", action=argparse.BooleanOptionalAction, help="special mode for producing augmentation of tiles.")
+	parser.add_argument("--nr_batches", type=int, help="number of images.")
+	parser.add_argument("--grid_size", type=int, help="grid size of a chessboard. For each choice we will produce grid_size^2 / 2 images per batch. Only relevant if augment_for_tiles is on.")
 
 	args = parser.parse_args()
 	im_list = glob.glob(args.glob_query)
@@ -280,13 +293,16 @@ if __name__ == '__main__':
 			im_arr = np.array(im)
 		images_list.append(im_arr)
 
-	imgs_per_batch = int(args.grid_size ** 2 / 2)
-	new_images = _prepare_images(
-		image_list=images_list, 
-		nr_batches=args.nr_batches, 
-		images_per_batch=imgs_per_batch,
-		transformation_list=raw_image_shifts_names
-		)
+    if args.augment_for_tiles:
+    	imgs_per_batch = int(args.grid_size ** 2 / 2)
+    	new_images = _prepare_images_for_tiles(
+    		image_list=images_list, 
+    		nr_batches=args.nr_batches, 
+    		images_per_batch=imgs_per_batch,
+    		transformation_list=raw_image_shifts_names
+    		)
+    else:
+
 
 	path = args.output_folder
 	os.makedirs(path, exist_ok=True)

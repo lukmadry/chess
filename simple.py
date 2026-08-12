@@ -4,10 +4,68 @@ import time
 import numpy as np
 import os
 import tempfile
+import glob
 from random import choice
 from PIL import Image
 import cv2
+import urllib.request
 
+GITHUB_RAW_BASE = "https://raw.githubusercontent.com/scenevr/chess/master/models/"
+PIECES = ["pawn", "rook", "knight", "bishop", "queen", "king"]
+
+os.makedirs("chess_models", exist_ok=True)
+scale_param = 0.015
+
+# 1. Download .obj files if they don't exist locally
+for piece in PIECES:
+    filename = f"{piece}.obj"
+    local_path = os.path.join("chess_models", filename)
+    if not os.path.exists(local_path):
+        print(f"Downloading {filename}...")
+        urllib.request.urlretrieve(GITHUB_RAW_BASE + filename, local_path)
+
+def create_simple_piece(radius=0.018, height=0.05, color=(0.1, 0.1, 0.1, 1.0)):
+    visual_shape = p.createVisualShape(
+        shapeType=p.GEOM_CYLINDER,
+        radius=radius,
+        length=height,
+        rgbaColor=color
+    )
+    collision_shape = p.createCollisionShape(
+        shapeType=p.GEOM_CYLINDER,
+        radius=radius,
+        height=height
+    )
+    return visual_shape, collision_shape
+
+def create_mesh_piece(mesh_filepath, scale=[scale_param, scale_param, scale_param], color=[0.1, 0.1, 0.1, 1]):
+    visual_id = p.createVisualShape(
+        shapeType=p.GEOM_MESH,
+        fileName=mesh_filepath,
+        meshScale=scale,
+        rgbaColor=color
+    )
+    collision_id = p.createCollisionShape(
+        shapeType=p.GEOM_CYLINDER,
+        fileName=mesh_filepath,
+        meshScale=scale
+    )
+    return visual_id, collision_id
+
+def place_piece_on_square(board_center, square_size, row, col, height, visual_id, collision_id):
+    """Calculates board coordinates (row, col) and spawns a piece."""
+    # Compute relative offset from board center (0,0 is corner)
+    x = board_center[0] + (col - 3.5) * square_size
+    y = board_center[1] + (row - 3.5) * square_size
+    z = board_center[2] + (height / 2.0)  # Offset by half-height so base rests on board
+    
+    body_id = p.createMultiBody(
+        baseMass=0.05,  # Non-zero mass allows physics interaction
+        baseCollisionShapeIndex=collision_id,
+        baseVisualShapeIndex=visual_id,
+        basePosition=[x, y, z]
+    )
+    return body_id
 
 def pan_camera_relative(dx_local, dy_local, current_target, yaw_deg):
     """
@@ -114,6 +172,7 @@ def compute_robust_view_matrix(target_pos, dist, yaw_deg, pitch_deg):
         cameraUpVector=up_vector
     )
 
+chess_pieces = glob.glob("chess_models/*.obj")
 
 # 1. Setup Simulation
 p.connect(p.DIRECT)
@@ -242,6 +301,24 @@ for row in range(nr_rows):
         p.changeVisualShape(objectUniqueId=tile_body, linkIndex=-1, textureUniqueId=txtr) 
 
 
+        if np.random.uniform() > 0.75:
+            print("will generate a piece")
+            color = 'w' if np.random.uniform() > 0.5 else 'b'
+            piece_color = (0.9, 0.9, 0.9, 1.0) if color == 'w' else (0.2, 0.1, 0.1, 1.0)
+            # visual_shape_piece, collision_shape_piece = create_simple_piece(color=piece_color)
+            # board_center, square_size, row, col, height, visual_id, collision_id
+            piece = choice(chess_pieces)
+            visual_shape_piece, collision_shape_piece = create_mesh_piece(piece, color=piece_color)
+            piece_id = place_piece_on_square(target_pos, tile_size, row, col, frame_thickness, visual_shape_piece, collision_shape_piece)
+
+            current_pos, _ = p.getBasePositionAndOrientation(piece_id)
+            new_orientation = p.getQuaternionFromEuler([np.radians(90), 0, 0])
+            p.resetBasePositionAndOrientation(piece_id, current_pos, new_orientation)
+
+
+# p.setConfigureDebugVisualizer(p.COV_ENABLE_SHADOWS, 1)
+# p.setConfigureDebugVisualizer(p.COV_ENABLE_GUI, 0)
+
 p.resetDebugVisualizerCamera(
     cameraDistance=dist,
     cameraYaw=yaw,
@@ -256,10 +333,11 @@ width, height, rgb_pixels, depth_pixels, segmentation_mask = p.getCameraImage(
     lightDirection=[0.5, 0.5, 1.0],     # Direction of light source
     lightColor=[1.0, 0.98, 0.92],        # Warm white light color
     lightDistance=2.5,
-    lightAmbientCoeff=0.45,              # <-- BOOST THIS (e.g. 0.35 -> 0.50) to lighten dark areas
-    lightDiffuseCoeff=0.65,              # Softens direct harsh highlights
-    lightSpecularCoeff=0.2,             # Regulates surface shine/varnish
-    renderer=p.ER_BULLET_HARDWARE_OPENGL
+    lightAmbientCoeff=0.1,              # <-- BOOST THIS (e.g. 0.35 -> 0.50) to lighten dark areas
+    lightDiffuseCoeff=0.75,              # Softens direct harsh highlights
+    lightSpecularCoeff=0.5,             # Regulates surface shine/varnish
+    renderer=p.ER_BULLET_HARDWARE_OPENGL,
+    shadow=1,
 )
 
 rgb_array = np.reshape(rgb_pixels, (height, width, 4)).astype(np.uint8)[:, :, :3]

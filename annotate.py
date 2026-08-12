@@ -31,6 +31,8 @@ cv2.setMouseCallback("Chessboard Annotator", mouse_callback)
 
 annotations = []
 
+print("will not convert to json files that are already in .csv")
+
 for fname in annot["filename"]:
     print(fname)
     print(f"Coordinates of {fname} are already in .csv, but not in .json, converting.")
@@ -38,7 +40,7 @@ for fname in annot["filename"]:
     json_fname = os.path.join(IMAGE_DIR, fname.replace("." + ext, ".json"))
     flat_coords = annot[annot['filename'] == fname].iloc[0, 1:].values
     flat_coords = [int(f) for f in flat_coords]
-    flat_coords = list(zip(flat_coords[0::2], flat_coords[1::2]))
+    flat_coords = list(zip(flat_coords[1::2], flat_coords[0::2]))
     flat_coords = [list(f) for f in flat_coords]
     with open(json_fname, "w") as f:
         json.dump({"inner_board": flat_coords}, f)

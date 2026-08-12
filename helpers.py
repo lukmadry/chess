@@ -17,20 +17,32 @@ from mpl_toolkits.axes_grid1 import ImageGrid
 from random import choices
 from PIL import Image
 
-def vectorise(pyfunc=None):
-    def decorator(func):
+def vectorise(depth_check = 2):
 
-        @functools.wraps(func)
-        def wrapper(first_arg, *args, **kwargs):
-            if isinstance(first_arg, Iterable) and isinstance(first_arg[0], Iterable): # this is because in our cases of use the first argument is always going to be a list
-                return np.array([func(f, *args, **kwargs) for f in first_arg])
-            return func(first_arg)
+    if depth_check == 2:
+        def decorator(func):
+            
+            @functools.wraps(func)
+            def wrapper(first_arg, *args, **kwargs):
+                if isinstance(first_arg, Iterable) and isinstance(first_arg[0], Iterable):
+                    return np.array([func(f, *args, **kwargs) for f in first_arg])
+                return func(first_arg)
+    
+            return wrapper
+    elif depth_check == 3:
+        def decorator(func):
+            @functools.wraps(func)
+            def wrapper(first_arg, *args, **kwargs):
+                if isinstance(first_arg, Iterable) and isinstance(first_arg[0], Iterable) and isinstance(first_arg[0][0], Iterable):
+                    return np.array([func(f, *args, **kwargs) for f in first_arg])
+                return func(first_arg)
+    
+            return wrapper
 
-        return wrapper
-
-    if pyfunc is None:
-        return decorator
-    return decorator(pyfunc)
+    else:
+        raise NotImplementedError("depth_check other than 2 or 3 not supported")
+        
+    return decorator
 
 def model_path_from_date(last_model_date, training_epoch=None, no_model=None):
     print('no_model arg ', no_model)
@@ -51,9 +63,11 @@ def model_path_from_date(last_model_date, training_epoch=None, no_model=None):
     chckpt_path = os.path.join(chckpt_path, f"epoch_{nr_epochs}.pth")
     return chckpt_path
 
-@vectorise
+@vectorise(3)
 def convert_boxes_to_cas(gt_input, height_first=True, normalised_labels=True, height=640, width=480, max_angle_rad=0.349):
     # max angle corresponds to 20 degrees
+    # print(gt_input)
+    # print([c for c in gt_input])
     center_x, center_y = sum([corner[0] for corner in gt_input])/4, sum([corner[1] for corner in gt_input])/4
     size = np.sqrt((gt_input[0][0]-gt_input[1][0])**2 + (gt_input[1][1]-gt_input[0][1])**2) 
 
@@ -64,7 +78,7 @@ def convert_boxes_to_cas(gt_input, height_first=True, normalised_labels=True, he
         return [center_x / width, center_y / height, size / min(height, width), angle / max_angle_rad]
     return [center_x, center_x, size, angle]
 
-@vectorise
+@vectorise(2)
 def cas_to_boxes(cas, normalised_labels=True, height=640, width=480, max_angle_rad=0.349):
     m = min(height, width)
     center_x = cas[0] * width
@@ -192,17 +206,18 @@ def turn_image_list_into_textures(image_list=None, glob_query=None):
 
     return [p.loadTexture(x) for x in image_list]
 
+color_dict = {'r': (255, 0, 0), 'g': (0, 255, 0), 'b': (0, 0, 255)}
 
-def labels_to_pixels(img, label_set):
+def labels_to_pixels(img, label_set, color='r'):
     h, w = img.shape[:2]
     pixels = [(int(y*w), int(x*h)) for x, y in zip(label_set[0::2], label_set[1::2])]
     pixels = np.array(pixels).reshape((-1,1,2))
-    cv2.polylines(img, [pixels], isClosed=True, color=(255,0,0), thickness=2)
+    cv2.polylines(img, [pixels], isClosed=True, color=color_dict[color], thickness=2)
 
-def gt_to_pixels(img, label_gt):
+def gt_to_pixels(img, label_gt, color='g'):
     label_gt = [(row, col) for (col, row) in label_gt]
     pixels = np.array(label_gt).reshape((-1,1,2))
-    cv2.polylines(img, [pixels], isClosed=True, color=(0,255,0), thickness=2)
+    cv2.polylines(img, [pixels], isClosed=True, color=color_dict[color], thickness=2)
 
 # split the loading part and the visualisation part
 # maybe irrelevant, just use Dataset ?
@@ -239,27 +254,10 @@ def load_images(image_dir, image_grid_size, with_ground_truths=True):
 
 
 def display_grid_with_labels(model, display_images, image_array, gt_list, image_grid_size, epoch=None,
-    savefig=False, fig_dir=None, show=True, figsize=9, with_ground_truths=True):
+    savefig=False, fig_dir=None, show=True, figsize=9, with_ground_truths=True, model_for_cas=True):
     if savefig and fig_dir is None:
         raise ValueError
 
-    # if model_dir is not None:
-    #     print("model_dir passed, we will load a model from the checkpoint")
-    #     if epoch == -1:
-    #         checkpoint = glob.glob(os.path.join(model_dir, "epoch_*.pth"))
-    #         checkpoint = sorted(checkpoint, key=lambda x: int(x.split("_")[-1].split(".")[0]))[-1]
-    #     else:
-    #         checkpoint = os.path.join(model_dir, f"epoch_{epoch}.pth")
-
-    #     image_array = np.array(image_array)
-    #     image_tensor = torch.tensor(image_array)
-    #     checkpoint = torch.load(checkpoint, weights_only=True)
-
-    #     regresor = model()
-    #     regresor.load_state_dict(checkpoint["model_state_dict"])
-    #     print("Successfully loaded a state dict to a model")
-    # else:
-    #     print("model_dir not passed, we will assume that the model passed is an already trained model.")
     regresor = model
     image_tensor = torch.tensor(image_array)
 
@@ -282,8 +280,9 @@ def display_grid_with_labels(model, display_images, image_array, gt_list, image_
 
         im = np.array(im, dtype=np.uint8)
         h, w = im.shape[:2]
-        labels_to_pixels(im, predictions[k].detach().numpy())
-        if with_ground_truths:
+        if with_ground_truths and not model_for_cas:
+
+            labels_to_pixels(im, predictions[k].detach().numpy())
             # gt_canonical = canonical_corner_order(gt_normalized).reshape(4,2)
             pred_canonical = predictions[k].detach().numpy()
             pred_canonical = list(zip(pred_canonical[0::2], pred_canonical[1::2]))
@@ -293,6 +292,18 @@ def display_grid_with_labels(model, display_images, image_array, gt_list, image_
             axis_one_error = sum([abs(x[0]-y[0]*h) for x, y in zip(gt[k], pred_canonical)])/4
             axis_two_error = sum([abs(x[1]-y[1]*w) for x, y in zip(gt[k], pred_canonical)])/4
             print(f"Pixel error: axis one {axis_one_error}, axis two {axis_two_error}")
+        if with_ground_truths and model_for_cas:
+
+            pred_canonical = cas_to_boxes(predictions[k].detach().tolist())
+            pred_canonical = np.array(pred_canonical, dtype=np.int32)
+            gt_to_pixels(im, gt[k], color='g')
+            gt_to_pixels(im, pred_canonical, color='r')
+            gt_canonical = np.roll(gt[k], shift=1, axis=0)[::-1, :] # needs some shifting
+
+            axis_one_error = sum([abs(x[0] - y[0]) for x, y in zip(gt_canonical, pred_canonical)])/4
+            axis_two_error = sum([abs(x[1] - y[1]) for x, y in zip(gt_canonical, pred_canonical)])/4
+            print(f"Pixel error: axis one {axis_one_error}, axis two {axis_two_error}")
+
         ax.imshow(im)
     if savefig:
         fig.savefig(fname=fig_dir)
