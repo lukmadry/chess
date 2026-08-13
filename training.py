@@ -14,18 +14,19 @@ from functools import partial
 
 from PIL import Image
 from torch import nn
-from torch.utils.data import DataLoader, Dataset, random_split
+from torch.utils.data import DataLoader, Dataset, random_split, ConcatDataset
 from torchvision.models import resnet34, ResNet34_Weights, mobilenet_v3_small, MobileNet_V3_Small_Weights
 from torchvision import transforms
 
 from helpers import display_grid_with_labels, convert_boxes_to_cas, cas_to_boxes, model_path_from_date
+from augmentation import raw_image_shift_dict
 
 # TODO move some stuff to a separate file, loss functions to losses.py, training and testing loops to loops.py or sth
 # TODO you unflatten and then flatten ground truths, this is very redundant, fix it
 # TODO the same way you diagnosis error in pixels in test loop, add diagnostics of angles
 # TODO add training on (center_x, center_y, yaw, width), maybe it will converge faster
-
 # TODO to be removed
+
 def canonical_corner_order(pts):
     """
     pts: list/array of 4 points [[y1, x1], [y2, x2], [y3, x3], [y4, x4]]
@@ -53,7 +54,6 @@ class AnisothropicWingLoss(nn.Module):
 
         width, height = orig_size
         self.register_buffer('scale', torch.tensor([width, height] * 4))
-        
         self.c = w_pixels - w_pixels * torch.log(torch.tensor(1.0 + w_pixels / epsilon_pixels))
 
     def forward(self, pred, target):
@@ -67,21 +67,31 @@ class AnisothropicWingLoss(nn.Module):
         loss = torch.empty_like(delta_pixels)
         loss[small_mask] = loss_small
         loss[~small_mask] = loss_large
-        
         return loss.mean()
 
-
+# create two classes that will have different behaviour of __getitem__ ?
 class ChessDataset(Dataset):
 
 	def __init__(self, images_dir, labels_dir=None, size=None, with_bright=False, filter_labels_params=False, 
-		allowed_dist=None, convert_to_cas=False, normalised_labels=False, input_size=224,
+		allowed_dist=None, convert_to_cas=False, normalised_labels=False, input_size=224, adaptive_size=False,
 		height=480., width=640., max_angle=20., verify_angle=False, keep_orig_bb=False):
+		"""
+		
+		if adaptive_size = True and normalised_labels = True, then we will load unnormalised labels in the initialisation phase and normalise them later
+
+		"""
 		self.images_dir = images_dir
 		if labels_dir is None:
 			labels_dir = os.path.join(images_dir, "ground_truths")
 		self.labels_dir = labels_dir
 		self.convert_to_cas = convert_to_cas
 		max_angle_rad = np.deg2rad(max_angle)
+
+		if isinstance(self.images_dir, str):
+			raise ValueError("images_dir has to be a string. If you want to pass a list to create Dataset from different directories, use Subset from Torch")
+
+		if adaptive_size and convert_to_cas:
+			raise NotImplementedError("adaptive_size and convert_to_cas both set to True are not possible yet")
 
 		if with_bright:
 			self.images_list = glob.glob(os.path.join(self.images_dir, "*.jpg"))
@@ -93,6 +103,10 @@ class ChessDataset(Dataset):
 		self.labels = []
 		self.height = height
 		self.width = width
+		self.adaptive_size = adaptive_size # in this case we will always normalise to [0,1] here
+
+		if adaptive_size:
+			normalised_labels = False
 
 		if not convert_to_cas and normalised_labels:
 			for l in self.images_list:
@@ -102,7 +116,7 @@ class ChessDataset(Dataset):
 				for (x, y) in labels_dict["inner_board"]:
 					local_lab.append([float(x)/height, float(y)/width])#  ([[float(x)/480., float(y)/640.] for (x,y) in labels_dict["inner_board"]])
 				self.labels.append(local_lab)
-		elif not convert_to_cas and not normalised_labels:
+		elif not convert_to_cas and not normalised_labels: 
 			for l in self.images_list:
 				local_lab = []
 				labels_dict = self._load_labels_dict(l)
@@ -167,12 +181,21 @@ class ChessDataset(Dataset):
 		return len(self.images_list)
 
 	def __getitem__(self, idx):
+		# rename to synth get item ? either case you'll need to branch it
 		im = Image.open(self.images_list[idx])
-		im = self._input_transform(im)
-		lab = self.labels[idx]
+		_lab = self.labels[idx]
+		if self.adaptive_size:
+			width, height = im.size
+			lab = []
+			for (x, y) in _lab:
+				lab.append([float(x)/height, float(y)/width])
+		else:
+			lab = _lab
 		lab = np.array(lab).flatten()
 		# lab = canonical_corner_order(lab)
 		lab = torch.tensor(lab, dtype=torch.float32)
+
+		im = self._input_transform(im)
 		return im, lab
 
 	def _load_labels_dict(self, image_fname):
@@ -195,8 +218,11 @@ class ChessDataset(Dataset):
 			# im = np.array(im, dtype=np.uint8)
 			if (self.convert_to_cas and not sample_orig_bb) or (not self.convert_to_cas):
 				lab = self.labels[idx]
-				if not normalized_targets:
+				if not normalized_targets and not self.adaptive_size: # will have to be adapted to adaptive size
 					lab = [[int(self.height*x), int(self.width*y)] for x, y in lab]
+				elif not normalized_targets and self.adaptive_size:
+					height, width = im.size
+					lab = [[int(height*x), int(width*y)] for x, y in lab]
 				# lab = np.array(lab).flatten()
 			elif (self.convert_to_cas and sample_orig_bb):
 				lab = self._orig_bb[idx] # note: in this scenario they are not normalised
@@ -206,8 +232,41 @@ class ChessDataset(Dataset):
 		# images = np.array(images)
 		return images, labels
 
-	def extend_by_augmentation(self):
-		pass
+
+class AugmentationChessDatasetWrapper(Dataset):
+	def __init__(self, subset, transforms_list=None, augmentation_factor=5, subsample_transforms=True, transformation_params=None):
+		self.subset = subset # maybe make a distinction between Subset and Dataset ?
+
+		if transformation_params is None:
+			transformation_params = {k: {} for k in raw_image_shift_dict.keys()}
+
+		self.tf_funcs = [raw_image_shift_dict[tr] for tr in transformation_list]
+	    self.tf_kwargs = [transformation_params[tr] for tr in transformation_list]
+	    self.num_tfs = len(transformation_list)
+
+	    self.augmentation_factor = augmentation_factor
+	    self.subsample_transforms = subsample_transforms
+
+    def __len__(self):
+    	return len(subset.size) * self.augmentation_factor
+
+	def __getitem__(self, idx):
+		orig_idx = idx % len(subset.size)
+		img, label = subset[orig_idx]
+
+		if self.subsample_transformations and num_tfs > 0:
+            # Pick k random transformations for this batch
+            k = np.random.randint(0, self.num_tfs + 1)
+            # Use zip to pair selected functions with their kwargs
+            # (Note: use 'sample' if you want unique transforms, 'choices' if duplicates are allowed)
+            active_tfs = sample(list(zip(self.tf_funcs, self.tf_kwargs)), k)
+        else:
+            active_tfs = zip(self.tf_funcs, self.tf_kwargs)
+
+        for func, kwargs in active_tfs:
+        	img = func(img, **kwargs)
+
+		return img, label
 
 
 class PretrainedSmallChessBoardRegressor(nn.Module):
@@ -316,8 +375,7 @@ def _print_stats_of_gradient(grad_dict):
 		print(f"Layer: {name}\nMean grad: {mean_mean_grad:.5f}\nMax value: {max_max_grad:.5f}")
 
 # copied from PyTorch website, for my purposes probably sufficient
-# these two can be probably merged somehow but I think it would decrease readability
-
+# these two can be probably merged somehow but I think it would decrease readability if done hastily
 def train_loop(dataloader, model, base_loss_fn, optimizer, angle_penalty_weight=0.5, batch_size=32):
 	size = len(dataloader.dataset)
 	model.train()
@@ -519,39 +577,88 @@ def test_loop_cas(dataloader, model, base_loss_fn, angle_penalty_weight=0.5, dum
 	return {'center_loss': test_center_loss, 'size_loss': test_size_loss, 'angle_loss': test_angle_loss}, pixel_error_axis_one, pixel_error_axis_two
 
 if __name__ == "__main__":
+	# TODO split arguments into categories to make this wall of text more readable and easier to navigate
 	parser = argparse.ArgumentParser()
-	parser.add_argument("--input_dir", type=str, required=True)
-	parser.add_argument("--labels_dir", type=str)
+	parser.add_argument("--synth_input_dir", type=str, required=True, nargs='+') # this will not be augmented as it is already augmented during image generation
+	parser.add_argument("--auth_input_dir", type=str, required=True, nargs='+') # this will be augmented additionally. 
+	parser.add_argument("--synth_labels_dir", type=str, nargs='+')
+	parser.add_argument("--auth_labels_dir", type=str, nargs='+')
+
 	parser.add_argument("--with_bright", action=argparse.BooleanOptionalAction)
 	parser.add_argument("--train_size", type=float, default=0.75)
+	parser.add_argument("--val_on_synth", action=argparse.BooleanOptionalAction)
+
 	parser.add_argument("--model", type=str, default="mobile")
 	parser.add_argument("--learning_rate", type=float, default=1e-3)
 	parser.add_argument("--epochs", type=int, default=25)
+	parser.add_argument("--train_backbone", action=argparse.BooleanOptionalAction, default=False)
 	parser.add_argument("--size", type=int, help="mostly for testing")
+	parser.add_argument("--angle_penalty", type=float, default=5)
+	parser.add_argument("--input_size", default=224, type=int)
+	parser.add_argument("--loss", type=str, default='mse')
+	parser.add_argument("--cas", action=argparse.BooleanOptionalAction)
+
 	parser.add_argument("--name", type=str)
 	parser.add_argument("--load_from_checkpoint", action=argparse.BooleanOptionalAction)
-	parser.add_argument("--train_backbone", action=argparse.BooleanOptionalAction, default=False)
-	parser.add_argument("--angle_penalty", type=float, default=5)
 	parser.add_argument("--last_model_date", type=str)
 	parser.add_argument("--no_model", type=int)
 	parser.add_argument("--epoch_to_restart", type=int, default=-1)
-	parser.add_argument("--cas", action=argparse.BooleanOptionalAction)
-	parser.add_argument("--input_size", default=224, type=int)
-	parser.add_argument("--loss", type=str, default='mse')
+
+	parser.add_argument("--augmentation_factor", default=5, type=int)
 	args = parser.parse_args()
 
 	assert args.model in ["mobile", "resnet", "from_scratch"]
 
 	if args.loss == 'wing' and args.cas:
-		raise NotImplementedError("WingLoss and center-angle-size together not supported.")
+		raise NotImplementedError("WingLoss and center-angle-size together not supported yet.")
 
-	chess_dataset = ChessDataset(images_dir=args.input_dir, 
-		labels_dir=args.labels_dir, 
-		with_bright=args.with_bright, 
-		size=args.size,
-		convert_to_cas=args.cas,
-		normalised_labels=True,
-		keep_orig_bb=True)
+	synth_chess_dataset_kwargs = dict(
+			with_bright=args.with_bright, 
+			size=args.size,
+			convert_to_cas=args.cas,
+			normalised_labels=True,
+			keep_orig_bb=True)
+
+	auth_chess_dataset_kwargs = deepcopy(synth_chess_dataset_kwargs)
+	auth_chess_dataset_kwargs['adaptive_size'] = True
+
+	if args.synth_labels_dir is None:
+		synth_ld = [None] * len(args.synth_input_dir)
+	else:
+		synth_ld = args.synth_labels_dir
+
+	if args.auth_labels_dir is None:
+		auth_ld = [None] * len(args.auth_input_dir)
+	else:
+		auth_ld = args.auth_labels_dir
+
+	synth_train_datasets = []
+	synth_val_datasets = []
+	generator = torch.Generator().manual_seed(421312)
+	for input_dir, lab_dir in zip(args.synth_input_dir, synth_ld):
+		synth_chess_dataset = ChessDataset(images_dir=input_dir, labels_dir=lab_dir, **synth_chess_dataset_kwargs)
+		synth_loc_size = len(synth_chess_dataset)
+		synth_loc_train_size = int(args.train_size * synth_loc_size)
+		synth_loc_val_size = synth_loc_size - synth_loc_train_size
+		synth_chess_train, synth_chess_val = random_split(synth_chess_dataset, [synth_loc_train_size, synth_loc_val_size], generator=generator)
+		synth_train_datasets.append(synth_chess_train)
+		synth_val_datasets.append(synth_chess_val)
+
+	auth_train_datasets = []
+	auth_val_datasets = []
+	for input_dir, lab_dir in zip(args.auth_input_dir, auth_ld):
+		auth_chess_dataset_pure = ChessDataset(images_dir=input_dir, labels_dir=lab_dir, **auth_chess_dataset_kwargs)
+		
+		auth_loc_size = len(auth_chess_dataset_pure)
+		auth_loc_train_size = int(args.train_size * auth_loc_size)
+		auth_loc_val_size = auth_loc_size - auth_loc_train_size
+		auth_chess_dataset_pure_train, auth_chess_dataset_pure_val = random_split(auth_chess_dataset_pure, [auth_loc_train_size, auth_loc_val_size], generator=generator)
+		auth_chess_dataset_aug_train = AugmentationChessDatasetWrapper(auth_chess_dataset_pure_train, augmentation_factor=args.augmentation_factor)
+		auth_train_datasets.extend([auth_chess_dataset_pure_train, auth_chess_dataset_aug_train])
+
+		auth_val_datasets.append(auth_chess_dataset_pure_val)
+
+	train_dataset = ConcatDataset(synth_datasets + auth_train_datasets)
 
 	if args.cas:
 		output_dim = 4
@@ -571,23 +678,23 @@ if __name__ == "__main__":
 	else:
 		raise NotImplementedError
 
-	total_size = len(chess_dataset)
-	train_size = int(args.train_size * total_size)
-	val_size = total_size - train_size
-	print(f"Train size: {train_size}, Validation size: {val_size}")
-	generator = torch.Generator().manual_seed(421312)
-	train_dataset, val_dataset = random_split(
-		chess_dataset,
-		[train_size, val_size], generator=generator)
+	raise NotImplementedError("TODO whole train/val scheme is to be modified under synth/auth separation, not done yet TODO")
 
 	train_loader = DataLoader(
 		train_dataset, batch_size=32, shuffle=True, num_workers=2, persistent_workers=True)
 
-	val_loader = DataLoader(
-		val_dataset, batch_size=32, shuffle=False, num_workers=2, persistent_workers=True)
 
+	auth_val_loader = DataLoader(
+		auth_val_datasets, batch_size=32, shuffle=False, num_workers=2, persistent_workers=True)
+	synth_val_loader = DataLoader(
+		synth_val_datasets, batch_size=32, shuffle=False, num_workers=2, persistent_workers=True)
+
+	val_loaders = [('real', auth_val_loader), ('synth', synth_val_loader)]
+
+	# ideally this part won't be touched at all after successful split
+	# at worst you can do a separate test loop on a synth dataset and authentic dataset
 	if args.loss == 'mse':
-		loss_fn = nn.MSELoss()# if args.loss == 'mse'#partial(mse_loss_with_penalty, penalty_weight=args.angle_penalty)
+		loss_fn = nn.MSELoss()
 	elif args.loss == 'wing':
 		loss_fn = AnisothropicWingLoss()
 	else:
@@ -622,17 +729,18 @@ if __name__ == "__main__":
 		print(f"Epoch: {t+1}\n----------------")
 		train_loop_fn(train_loader, regressor, base_loss_fn=loss_fn, optimizer=optimizer, angle_penalty_weight=args.angle_penalty)
 		path_image = os.path.join(chckpt_path, f"grid_epoch_{t+1}.png")
-		val_loss, val_pixel_error_axis_one, val_pixel_error_axis_two = test_loop_fn(val_loader, regressor, 
-			base_loss_fn=loss_fn, angle_penalty_weight=args.angle_penalty, dump_image=True, dump_image_path=path_image)
+		for title, val_loader in val_loaders:
+			print(f"Currently evaluating val: {title}")
+			val_loss, val_pixel_error_axis_one, val_pixel_error_axis_two = test_loop_fn(val_loader, regressor, 
+				base_loss_fn=loss_fn, angle_penalty_weight=args.angle_penalty, dump_image=True, dump_image_path=path_image)
 		checkpoint = {
 			"epoch": t,
 			"model_state_dict": regressor.state_dict(),
 			"optimizer_state_dict": optimizer.state_dict(),
-			"pixel_error_axis_one": val_pixel_error_axis_one,
-			"pixel_error_axis_two": val_pixel_error_axis_two,
+			# "pixel_error_axis_one": val_pixel_error_axis_one,
+			# "pixel_error_axis_two": val_pixel_error_axis_two,
 			"model_name": args.model,
-			'loss': val_loss,
-			'train_indices': ,
+			# 'loss': val_loss,
 		}
 		torch.save(checkpoint, os.path.join(chckpt_path, f"epoch_{t}.pth"))
 		scheduler.step(val_pixel_error_axis_one + val_pixel_error_axis_two)

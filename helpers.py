@@ -18,18 +18,18 @@ from random import choices
 from PIL import Image
 
 def vectorise(depth_check = 2):
-
     if depth_check == 2:
+
         def decorator(func):
-            
             @functools.wraps(func)
             def wrapper(first_arg, *args, **kwargs):
                 if isinstance(first_arg, Iterable) and isinstance(first_arg[0], Iterable):
                     return np.array([func(f, *args, **kwargs) for f in first_arg])
                 return func(first_arg)
-    
             return wrapper
+            
     elif depth_check == 3:
+
         def decorator(func):
             @functools.wraps(func)
             def wrapper(first_arg, *args, **kwargs):
