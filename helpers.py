@@ -27,7 +27,7 @@ def vectorise(depth_check = 2):
                     return np.array([func(f, *args, **kwargs) for f in first_arg])
                 return func(first_arg)
             return wrapper
-            
+
     elif depth_check == 3:
 
         def decorator(func):
@@ -252,9 +252,10 @@ def load_images(image_dir, image_grid_size, with_ground_truths=True):
         return display_images, image_array, gt_list
     return display_images, image_array
 
-
+# probably to be rewritten in the future
 def display_grid_with_labels(model, display_images, image_array, gt_list, image_grid_size, epoch=None,
     savefig=False, fig_dir=None, show=True, figsize=9, with_ground_truths=True, model_for_cas=True):
+
     if savefig and fig_dir is None:
         raise ValueError
 
@@ -281,14 +282,12 @@ def display_grid_with_labels(model, display_images, image_array, gt_list, image_
         im = np.array(im, dtype=np.uint8)
         h, w = im.shape[:2]
         if with_ground_truths and not model_for_cas:
-
+            # print(gt[k])
             labels_to_pixels(im, predictions[k].detach().numpy())
-            # gt_canonical = canonical_corner_order(gt_normalized).reshape(4,2)
             pred_canonical = predictions[k].detach().numpy()
             pred_canonical = list(zip(pred_canonical[0::2], pred_canonical[1::2]))
             # print("gt list ", gt[k])
             gt_to_pixels(im, gt[k])
-            # print("zipped gt and preds ", [(x[0], y[0]) for x, y in zip(gt[k], pred_canonical)])
             axis_one_error = sum([abs(x[0]-y[0]*h) for x, y in zip(gt[k], pred_canonical)])/4
             axis_two_error = sum([abs(x[1]-y[1]*w) for x, y in zip(gt[k], pred_canonical)])/4
             print(f"Pixel error: axis one {axis_one_error}, axis two {axis_two_error}")
@@ -304,6 +303,7 @@ def display_grid_with_labels(model, display_images, image_array, gt_list, image_
             axis_two_error = sum([abs(x[1] - y[1]) for x, y in zip(gt_canonical, pred_canonical)])/4
             print(f"Pixel error: axis one {axis_one_error}, axis two {axis_two_error}")
 
+        im = cv2.resize(im, (224, 224))
         ax.imshow(im)
     if savefig:
         fig.savefig(fname=fig_dir)
