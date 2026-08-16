@@ -19,32 +19,14 @@ from torch.utils.data import DataLoader, Dataset, random_split, ConcatDataset
 from torchvision.models import resnet34, ResNet34_Weights, mobilenet_v3_small, MobileNet_V3_Small_Weights
 from torchvision import transforms
 
-from helpers import display_grid_with_labels, convert_boxes_to_cas, cas_to_boxes, model_path_from_date
+from helpers import display_grid_with_labels, convert_boxes_to_cas, cas_to_boxes, model_path_from_date, canonical_corner_order
 from augmentation import final_image_shifts_dict
 
 # TODO move some stuff to a separate file, loss functions to losses.py, training and testing loops to loops.py or sth
 # TODO you unflatten and then flatten ground truths, this is very redundant, fix it
 # TODO the same way you diagnosis error in pixels in test loop, add diagnostics of angles
 # TODO add training on (center_x, center_y, yaw, width), maybe it will converge faster
-# TODO to be removed
 
-def canonical_corner_order(pts):
-	"""
-	pts: list/array of 4 points [[y1, x1], [y2, x2], [y3, x3], [y4, x4]]
-	Returns points sorted clockwise starting from the corner closest to top-left (0,0).
-	"""
-	pts = np.array(pts, dtype=np.float32)
-	center = pts.mean(axis=0)
-	
-	# Sort points clockwise by polar angle relative to centroid
-	angles = np.arctan2(pts[:, 0] - center[0], pts[:, 1] - center[1])
-	sorted_pts = pts[np.argsort(angles)]
-	
-	# Set point closest to top-left origin (0,0) as index 0
-	dist_to_origin = np.sum(sorted_pts**2, axis=1)
-	start_idx = np.argmin(dist_to_origin)
-	
-	return np.roll(sorted_pts, -start_idx, axis=0).flatten()
 
 def create_input_transform(input_size):
 	_input_transform = transforms.Compose(
@@ -177,12 +159,6 @@ class ChessDataset(Dataset):
 					raise ValueError("angle outside of proposed range")  
 
 		self._input_transform = create_input_transform(input_size) 
-		# transforms.Compose(
-		# 		[transforms.ToTensor(),
-		# 		 transforms.Resize((input_size, input_size), antialias=True),
-		# 		 transforms.Normalize(
-		# 			mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-		# 		 ])
 
 		if not len(self.labels) == len(self.images_list):
 			raise ValueError(f"Size of image list and labels set are not the same, we have respectively {len(self.images_list)} and {len(self.labels)}")
@@ -231,18 +207,14 @@ class ChessDataset(Dataset):
 		return new_images
 
 	def _unify_orientation_of_labels(self):
+
 		if self.convert_to_cas:
 			raise ValueError("unifying orientation not applicable if targets are in CAS format")
 
 		new_labels = []
-		for im, lab in zip(self.images_list, self.labels):
-			im_pil = Image.open(im)
-			w, h = im_pil.size
-			if self.adaptive_size or self.normalised_labels: # if adaptive size is True then the other one automatically as well
-				lab = [[int(x*h), int(y*w)] for x, y in lab]
-			cas_lab = convert_boxes_to_cas(lab, height=h, width=w)
-			bb_lab = cas_to_boxes(cas_lab, height=h, width=w)
-			new_labels.append(np.array(bb_lab, dtype=np.uint8))
+		for lab in self.labels:
+			_lab = canonical_corner_order(lab)
+			new_labels.append(_lab)
 		self.labels = new_labels
 
 	def _load_labels_dict(self, image_fname):
@@ -337,14 +309,7 @@ class AugmentationChessDatasetWrapper(Dataset):
 
 	def __getitem__(self, idx):
 		orig_idx = idx % len(self.subset)
-		# raise NotImplementedError("current implementation samples already transformed image, you need to get raw image from image_list")
 		img, label = self.subset[orig_idx] # actually no
-
-		# base_ds = self.subset.dataset
-		# print(f"AugWrapper {id(self)} fetching from {id(base_ds)}, directory {base_ds.images_dir}")
-		# print("type of image obtained from subset")
-		# print(type(img))
-		# print(type(label))
 
 		if self.subsample_transforms and self.num_tfs > 0:
 			# Pick k random transformations for this batch
@@ -630,7 +595,6 @@ def test_loop(dataloader, model, base_loss_fn, angle_penalty_weight=0.5, dump_im
 			show=False, 
 			savefig=True, 
 			fig_dir=dump_image_path)
-		
 
 	return {'mse_loss': test_mse_loss, 'square_angles_loss': test_square_angle_loss, 'cos_sim_loss': test_cos_sim_loss}, pixel_error_axis_one, pixel_error_axis_two
 

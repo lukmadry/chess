@@ -7,6 +7,7 @@ import tempfile
 import argparse
 import glob
 import json
+import io
 
 from copy import deepcopy
 from random import choice, choices
@@ -14,7 +15,7 @@ from PIL import Image
 from concurrent.futures import ThreadPoolExecutor
 import cv2
 
-from helpers import project_world_pixel, get_coordinates_from_half_extents, compute_robust_view_matrix, pan_camera_relative
+from helpers import project_world_pixel, get_coordinates_from_half_extents, compute_robust_view_matrix, pan_camera_relative, canonical_corner_order
 from augmentation import roughening_final_image_shifts_names, final_image_shifts_dict, apply_rotation, add_directional_board_shadow, apply_hue_shift, apply_value_shift_deterministic
 
 post_processing_fns = [final_image_shifts_dict[fn] for fn in roughening_final_image_shifts_names]
@@ -125,9 +126,43 @@ def composite_with_soft_edges(fg_board, bg_img, board_mask, blur_ksize=3):
     return composite.clip(0, 255).astype(np.uint8)
 
 
+def introduce_pieces_ids_on_board(tile_size, board_center, frame_thickness):
+	global shape_cache
+
+	N_pieces_white = choice(range(4, 16))
+	N_pieces_black = choice(range(4, 16))
+	upright_orientation = p.getQuaternionFromEuler([np.radians(90), 0., 0.])
+
+	pieces_on_board_white = choices(PIECES_STRATIFIED, k=N_pieces_white) + ['king']
+	pieces_on_board_black = choices(PIECES_STRATIFIED, k=N_pieces_black) + ['king']
+	pieces_on_board = pieces_on_board_white + pieces_on_board_black
+	N = N_pieces_black + N_pieces_white + 2 # +2 because kings
+
+	occupied_spots = choices([(x,y) for x in range(8) for y in range(8)], k=N)
+	ids_of_pieces_on_board = []
+	piece_names = []
+	for j_piece, (row, col) in enumerate(occupied_spots):
+		loc_color = 'w' if j_piece < N_pieces_white + 1 else 'b'
+		x = board_center[0] + (col - 3.5) * tile_size
+		y = board_center[1] + (row - 3.5) * tile_size
+		z = board_center[2] + (frame_thickness / 2.0)
+
+		loc_vis_id, loc_col_id = shape_cache[loc_color][pieces_on_board[j_piece]]
+		piece_id = p.createMultiBody(
+			baseMass=0.5,
+			baseVisualShapeIndex=loc_vis_id,
+			baseCollisionShapeIndex=loc_col_id,
+			basePosition=[x,y,z],
+			baseOrientation=upright_orientation,
+			)
+		ids_of_pieces_on_board.append(piece_id)
+		piece_names.append(pieces_on_board[j_piece])
+
+	return ids_of_pieces_on_board, piece_names
+
 def create_chessboard_images(nr_chessboards, nr_permutations, bg_images, white_file_list, dark_file_list, output_dir,
 	tile_size=0.05, nr_rows=4, img_h=480, img_w=640, verbose=1, panning_range=(0, 0.1), overwrite=False, yaw_range=(-90, 90),
-	random_positions=20, dist_range=(0.6, 1.0), border_margin_range=(0.1, 0.75), fast_option=False):
+	random_positions=20, dist_range=(0.6, 1.0), border_margin_range=(0.1, 0.75)):
 
 	physics_client = p.connect(p.DIRECT)
 	p.setAdditionalSearchPath(pybullet_data.getDataPath())
@@ -156,9 +191,6 @@ def create_chessboard_images(nr_chessboards, nr_permutations, bg_images, white_f
 		bg_images = [cv2.resize(x, (img_w, img_h), interpolation=cv2.INTER_AREA) for x in bg_img]
 	else:
 		raise NotImplementedError # make sure that they are of correct size if not rescale them
-
-	if fast_option:
-		raise NotImplementedError
 
 	colors = [[0.9, 0.9, 0.8, 1.0], [0.2, 0.2, 0.2, 1.0]]
 	nr_cols = nr_rows
@@ -255,32 +287,8 @@ def create_chessboard_images(nr_chessboards, nr_permutations, bg_images, white_f
 				    basePosition=[0.0, 0.0, 0]
 				    )
 
-				N_pieces_white = choice(range(4, 16))
-				N_pieces_black = choice(range(4, 16))
-				upright_orientation = p.getQuaternionFromEuler([np.radians(90), 0., 0.])
 
-				pieces_on_board_white = choices(PIECES_STRATIFIED, k=N_pieces_white) + ['king']
-				pieces_on_board_black = choices(PIECES_STRATIFIED, k=N_pieces_black) + ['king']
-				pieces_on_board = pieces_on_board_white + pieces_on_board_black
-				N = N_pieces_black + N_pieces_white + 2 # +2 because kings
-
-				occupied_spots = choices([(x,y) for x in range(8) for y in range(8)], k=N)
-				ids_of_pieces_on_board = []
-				for j_piece, (row, col) in enumerate(occupied_spots):
-					loc_color = 'w' if j_piece < N_pieces_white + 1 else 'b'
-					x = board_center[0] + (col - 3.5) * tile_size
-					y = board_center[1] + (row - 3.5) * tile_size
-					z = board_center[2] + (frame_thickness / 2.0)
-
-					loc_vis_id, loc_col_id = shape_cache[loc_color][pieces_on_board[j_piece]]
-					piece_id = p.createMultiBody(
-						baseMass=0.5,
-						baseVisualShapeIndex=loc_vis_id,
-						baseCollisionShapeIndex=loc_col_id,
-						basePosition=[x,y,z],
-						baseOrientation=upright_orientation,
-						)
-					ids_of_pieces_on_board.append(piece_id)
+				ids_of_pieces_on_board, _ = introduce_pieces_ids_on_board(tile_size=tile_size, board_center=board_center, frame_thickness=frame_thickness)
 
 				frame_texture = choice(bg_images_textures)
 				p.changeVisualShape(objectUniqueId=frame_id, linkIndex=-1, specularColor=[0.4, 0.4, 0.4], textureUniqueId=frame_texture)
@@ -351,6 +359,91 @@ def create_chessboard_images(nr_chessboards, nr_permutations, bg_images, white_f
 			for row in range(nr_rows):
 				for col in range(nr_cols):
 					p.removeBody(tiles[row][col])
+
+def paint_shadows(display_image, ids_of_pieces):
+
+	for piece_id in ids_of_pieces:
+		base_position, _ = p.getBasePositionAndOrientation(piece_id)
+
+		# code for Gaussian blob goes here
+
+def rescale_corners(corners, orig_image, reference_image_shape):
+	pass
+
+def create_segmentation_mask(corners, height=None, width=None, image=None):
+	# H, W = image.shape[:2]
+	if height is None or width is None:
+		height, width = image.shape[:2]
+	mask = np.zeros((height, width), dtype=np.uint8)
+
+	pts = np.array(corners).astype(np.int32).reshape((-1, 1, 2))
+	cv2.fillpoly(mask, pts, color=1)
+	return mask
+
+def load_cropped_texture(image_filepath, corner_filepath, reorient_corners=False, height_axis=1):
+
+	image = Image.open(image_filepath)
+	with open(corner_filepath, "r") as f:
+		corners = json.load(f)['inner_board']
+
+	if reorient_corners:
+		corners = canonical_corner_order(corners)
+
+	width_axis = 1 - height_axis
+
+	top = int(corners[0][height_axis] / 2.0 + corners[1][height_axis] / 2.0) # or change to max?
+	bottom = int(corners[2][height_axis] / 2.0 + corners[2][height_axis] / 2.0)
+
+	left = int(corners[0][width_axis] / 2.0 + corners[3][width_axis] / 2.0)
+	right = int(corners[1][width_axis] / 2.0 + corners[2][width_axis] / 2.0)
+
+	# turn into a cropbox
+	img_cropped = image.crop((left, top, right, bottom))
+	buffer = io.BytesIO()
+	img_cropped.save(buffer, format="PNG")
+
+	texture_id = p.loadTexture(buffer.getvalue())
+	return texture_id
+
+
+def create_half_synthetic_chessboard(chessboard_image, playable_chessboard_location, whole_chessboard_location,
+	background_image, nr_pieces_variants, target_size, frame_thickness=0):
+	"""
+	chessboard location - a list of corners of a chessboard in a format [top-left, top-right, bottom-right, bottom-left]
+	"""
+
+	tile_size_x = np.mean([playable_chessboard_location[1][0] - playable_chessboard_location[0][0], playable_chessboard_location[3][0] - playable_chessboard_location[2][0]])/8
+	tile_size_y = np.mean([playable_chessboard_location[2][1] - playable_chessboard_location[1][1], playable_chessboard_location[3][1] - playable_chessboard_location[0][1]])/8
+
+	center = np.mean(playable_chessboard_location, axis=0).tolist()
+
+	# they should be equal if all goes well
+	square_size = ??
+	half_extent = square_size/2.0
+	visual_id = p.createVisualShape(
+		shapeType=p.GEOM_BOX,
+		halfExtents=[half_extent, half_extent, 0.001],
+		rgbaColor=[1,1,1,1])
+
+
+	# shadows go here
+	ids_of_pieces_on_board, names_pieces_on_board = introduce_pieces_ids_on_board((tile_size_x + tile_size_y) / 2, center + [frame_thickness], frame_thickness)
+
+def create_half_synth_chessboard_images(nr_chessboards, nr_permutations, 
+	bg_images, chessboard_images_dir, playable_folder="playable_chessboard", whole_folder="whole_chessboard"):
+
+	chessboard_images_filelist = glob.glob(os.path.join(chessboard_images_dir, "*.jpg"))
+	chessboard_images_filelist.sort()
+
+	corners_chessboards_filelist = [os.path.join(chessboard_images_dir, whole_folder, x.split("/")[-1].replace(".jpg", ".json")) for x in chessboard_images_filelist]
+
+	chessboard_images_textures = []
+	for img_filepath, crn_fpath in zip(chessboard_images_filelist, corners_chessboards_filelist):
+		cropped_texture = load_cropped_texture(
+			image_filepath=filepath, corner_filepath=crn_fpath)
+		chessboard_images_textures.append(cropped_texture)
+
+	for i in range(nr_chessboards):
 
 
 if __name__ == '__main__':

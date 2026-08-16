@@ -3,28 +3,52 @@ import cv2
 import json
 import pandas as pd
 import sys
+import shutil
+import glob
+from PIL import Image
 
 # Configuration
-IMAGE_DIR = "images_to_annotate"       # Folder containing your images
-OUTPUT_CSV = "images_to_annotate/labels.csv"  # Output file for ground-truth coordinates
+IMAGE_DIR = "empty_chessboards"       # Folder containing your images
+OUTPUT_CSV = "empty_chessboards/labels_whole_chessboard.csv"  # Output file for ground-truth coordinates
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp")
 
+webp_files = glob.glob(os.path.join(IMAGE_DIR, "*.webp"))
+for im in webp_files:
+    img_pil = Image.open(im)
+    img_pil.save(im.replace(".webp", ".jpg"), "JPEG", quality=95)
+
+sublist_to_annotate_and_rescale = None
+
+if sublist_to_annotate_and_rescale is not None:
+    with open(sublist_to_annotate_and_rescale, "r") as f:
+        sublist = f.readlines()
+        sublist = [x.replace('\n', '') for x in sublist]
+
+print("if conversion was necessary, it has already happened")
+# print(sublist)
 target_width = 640
 target_height = 480
 
-os.makedirs(os.path.join(IMAGE_DIR, "ground_truths"), exist_ok=True)
-os.makedirs(os.path.join(IMAGE_DIR, "ground_truths_backup"), exist_ok=True)
+json_folder = "whole_chessboard"
+os.makedirs(os.path.join(IMAGE_DIR, json_folder), exist_ok=True)
+os.makedirs(os.path.join(IMAGE_DIR, json_folder + "_backup"), exist_ok=True)
 
 # Collect image paths
 
 image_files = [f for f in os.listdir(IMAGE_DIR) if f.lower().endswith(IMAGE_EXTS)]
-image_files.sort()
-
-if os.path.exists(OUTPUT_CSV):
-    annot = pd.read_csv(OUTPUT_CSV)
-    image_files = [f for f in image_files if f not in annot["filename"].values] # without values it's undefined behaviour...
+if sublist_to_annotate_and_rescale is not None:
+    image_files = [f for f in image_files if os.path.join(IMAGE_DIR, f) in sublist]
+    backup_files = [os.path.join(IMAGE_DIR, "backup_too_big", f.split("/")[-1]) for f in image_files]
 else:
-    annot = None
+    backup_files = [os.path.join(IMAGE_DIR, "backup", f.split("/")[-1]) for f in image_files]
+# image_files.sort()
+os.makedirs(os.path.join(IMAGE_DIR, "backup"), exist_ok=True)
+
+# if os.path.exists(OUTPUT_CSV):
+#     annot = pd.read_csv(OUTPUT_CSV)
+#     image_files = [f for f in image_files if f not in annot["filename"].values] # without values it's undefined behaviour...
+# else:
+#     annot = None
 # Mouse callback state
 points = []
 
@@ -40,19 +64,19 @@ cv2.setMouseCallback("Chessboard Annotator", mouse_callback)
 
 annotations = []
 
-print("will not convert to json files that are already in .csv")
-if annot is not None:
-    for fname in annot["filename"]:
-        print(fname)
-        print(f"Coordinates of {fname} are already in .csv, but not in .json, converting.")
-        ext = fname.split(".")[-1]
-        json_fname = os.path.join(IMAGE_DIR, 'ground_truths', fname.replace("." + ext, ".json"))
-        flat_coords = annot[annot['filename'] == fname].iloc[0, 1:].values
-        flat_coords = [int(f) for f in flat_coords]
-        flat_coords = list(zip(flat_coords[1::2], flat_coords[0::2]))
-        flat_coords = [list(f) for f in flat_coords]
-        with open(json_fname, "w") as f:
-            json.dump({"inner_board": flat_coords}, f)
+# print("will not convert to json files that are already in .csv")
+# if annot is not None:
+#     for fname in annot["filename"]:
+#         print(fname)
+#         print(f"Coordinates of {fname} are already in .csv, but not in .json, converting.")
+#         ext = fname.split(".")[-1]
+#         json_fname = os.path.join(IMAGE_DIR, 'ground_truths', fname.replace("." + ext, ".json"))
+#         flat_coords = annot[annot['filename'] == fname].iloc[0, 1:].values
+#         flat_coords = [int(f) for f in flat_coords]
+#         flat_coords = list(zip(flat_coords[1::2], flat_coords[0::2]))
+#         flat_coords = [list(f) for f in flat_coords]
+#         with open(json_fname, "w") as f:
+#             json.dump({"inner_board": flat_coords}, f)
     
 invert = (len(sys.argv) > 1) and (sys.argv[1] == '--invert')
 if invert:
@@ -72,7 +96,8 @@ if invert:
 
     exit()
 
-for filename in image_files:
+# print(len(image_files))
+for k, filename in enumerate(image_files):
     print(filename)
     
     filepath = os.path.join(IMAGE_DIR, filename)
@@ -85,8 +110,13 @@ for filename in image_files:
     while True:
         display_img = raw_img.copy()
         h, w = display_img.shape[:2]
+        prop = float(w) / float(h)
+        new_h = 2*480
+        new_w = int(new_h * prop)
+        shutil.copy(filepath, backup_files[k]) # should add some check if exists
         if h > 3*target_height or w > 3*target_height:
-            display_img = cv2.resize(raw_img, (target_height, target_width))
+            display_img = cv2.resize(raw_img, (new_w, new_h))
+            cv2.imwrite(filepath, display_img)
         # print(points)
         # Draw recorded points and bounding lines
         for idx, pt in enumerate(points):
@@ -130,11 +160,11 @@ for filename in image_files:
                 flat_coords = [list(f) for f in flat_coords]
                 annotations.append({"image_path": filename, "points": flat_coords})
                 print(f"Saved {filename}: {flat_coords}")
-                json_fname = os.path.join(IMAGE_DIR, "ground_truths", filename.replace(".jpg", ".json"))
+                json_fname = os.path.join(IMAGE_DIR, json_folder, filename.replace(".jpg", ".json"))
                 with open(json_fname, "w") as f:
                     json.dump({"inner_board": flat_coords}, f)
 
-                json_fname = os.path.join(IMAGE_DIR, "ground_truths_backup", filename.replace(".jpg", ".json"))
+                json_fname = os.path.join(IMAGE_DIR, json_folder + "_backup", filename.replace(".jpg", ".json"))
                 with open(json_fname, "w") as f:
                     json.dump({"inner_board": flat_coords}, f)
                 break
