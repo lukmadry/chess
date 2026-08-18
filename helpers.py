@@ -17,6 +17,41 @@ from mpl_toolkits.axes_grid1 import ImageGrid
 from random import choices
 from PIL import Image
 
+def none_sentinel(**kwargs):
+    non_none_keys = [key for key, val in kwargs.items() if val is not None]
+    if len(non_none_keys) != 1:
+        all_keys = ", ".join(kwargs.keys())
+        raise ValueError(f"Expected exactly one non-None argument among ({all_keys})"
+            f"but found non-None values for {non_none_keys}")
+
+def canonical_corner_order(pts):
+    """
+    pts: array-like of 4 points [[y, x], ...]
+    Returns array of 4 points ordered [Top-Left, Top-Right, Bottom-Right, Bottom-Left].
+    """
+    pts = np.array(pts, dtype=np.float32).reshape(4, 2)
+    center = pts.mean(axis=0)
+    
+    # Compute relative vectors from center: [dy, dx]
+    rel = pts - center
+    
+    dy = rel[:, 0]
+    dx = rel[:, 1]
+    
+    # Quadrant masks
+    tl_mask = (dy < 0) & (dx < 0)  # Top-Left (-y, -x)
+    tr_mask = (dy < 0) & (dx > 0)  # Top-Right (-y, +x)
+    br_mask = (dy > 0) & (dx > 0)  # Bottom-Right (+y, +x)
+    bl_mask = (dy > 0) & (dx < 0)  # Bottom-Left (+y, -x)
+    
+    canonical_pts = np.zeros_like(pts)
+    canonical_pts[0] = pts[tl_mask]
+    canonical_pts[1] = pts[tr_mask]
+    canonical_pts[2] = pts[br_mask]
+    canonical_pts[3] = pts[bl_mask]
+    
+    return canonical_pts.astype(np.int32)
+
 def vectorise(depth_check = 2):
     if depth_check == 2:
 
