@@ -55,7 +55,7 @@ def initialise_shapes_cache(scale_parameter=0.015):
 	shape_cache = {'w': {}, 'b': {}}
 	mesh_scale = [scale_parameter, scale_parameter, scale_parameter]
 
-	height_cache = {}
+	# height_cache = {}
 
 	for loc_piece in PIECES:
 		fname = os.path.join(f"chess_models/{loc_piece}.obj")
@@ -82,7 +82,7 @@ def initialise_shapes_cache(scale_parameter=0.015):
 		shape_cache['w'][loc_piece] = (vis_id_white, col_id)
 		shape_cache['b'][loc_piece] = (vis_id_black, col_id)
 
-	return shape_cache, height_cache
+	return shape_cache
 
 
 def place_piece_on_square(board_center, square_size, row, col, height, visual_id, collision_id):
@@ -245,7 +245,6 @@ def create_chessboard_images(nr_chessboards, nr_permutations, bg_images, white_f
 					# txtr = p.loadTexture(txtr_file)
 					p.changeVisualShape(objectUniqueId=tile_body, linkIndex=-1, textureUniqueId=txtr) 
 
-
 			for i in range(nr_permutations):
 				shadow_x_direction = 2*(np.random.uniform() > 0.5 - 1) * 10
 				shadow_y_direction = 2*(np.random.uniform() > 0.5 - 1) * 10
@@ -367,25 +366,30 @@ def create_chessboard_images(nr_chessboards, nr_permutations, bg_images, white_f
 				for col in range(nr_cols):
 					p.removeBody(tiles[row][col])
 
-def paint_shadows(display_image, pieces_names, occupied_spots, tile_size, shadow_angle, init_shift_x, init_shift_y):
+def paint_shadows(display_image, occupied_spots, tile_size, init_shift_x, init_shift_y, shadow_angle=30, opacity=0.2):
+	"""
+	takes the original image, spots describing the location of chess pieces and attaches shadows
+
+	"""
 
 	start_angle = 0
 	end_angle = 180
-	axes = (15, 50) # to modify depending on the figure
+	axes = (40, 15) # to modify depending on the figure
 	shadow_base = np.zeros_like(display_image)
-	color = (0, 0, 0)
-	opacity = 0.2
-	for (row, col), name in zip(occupied_spots, pieces_names):
+	color = (255, 255, 255)
+	for (col, row) in occupied_spots:
 		# code for Gaussian blob goes here
-		pos_x = init_shift_x + tile_size * col
-		pos_y = init_shift_y + tile_size * row
+		pos_x = int(init_shift_x + tile_size * (8-col))
+		pos_y = int(init_shift_y + tile_size * (8-row))
 
 		cv2.ellipse(shadow_base, (pos_x, pos_y), axes, shadow_angle, start_angle, end_angle, color, -1)
 
 	shadow_soft = cv2.GaussianBlur(shadow_base, (15, 15), 0)
-
-	fin_img = display_img * opacity + shadow_soft * (1-opacity)
-	return fin_img
+	shadow_soft = shadow_soft / 255.
+	mask = shadow_soft > 0
+	fin_img = display_image.copy()
+	fin_img[mask] = fin_img[mask] * ( 1 - opacity * shadow_soft[mask] )
+	return np.array(fin_img, dtype=np.uint8)
 
 
 def create_segmentation_mask(corners, height=None, width=None, image=None):
@@ -440,7 +444,7 @@ def load_cropped_texture(image_filepath, corners=None, corner_filepath=None,
 	return cv2.resize(img_cropped, target_size)
 
 
-def create_one_halfsynth(rim_to_tile, background_image, 
+def create_one_halfsynth(rim_to_tile, 
 	center=[0., 0.], tile_size=0.05, frame_thickness=0):
 
 	half_extent = 4 * tile_size + rim_to_tile * tile_size
@@ -464,7 +468,7 @@ def create_one_halfsynth(rim_to_tile, background_image,
 # TODO add permutations ?
 def create_half_synth_chessboard_images(nr_chessboards, bg_images,
 	chessboard_images_dir, output_dir, playable_folder="playable_chessboard", whole_folder="whole_chessboard", img_w=640, img_h=480,
-	dist_range=(0.6, 0.7), yaw_range=(-5,5), pitch=-89.5):
+	dist_range=(0.4, 0.7), yaw_range=(-5,5), pitch=-89.5, shadow_angle=30):
 
 	chessboard_images_filelist = glob.glob(os.path.join(chessboard_images_dir, "*.jpg")) # note that we are only considering non-cropped versions !
 	chessboard_images_filelist = [x for x in chessboard_images_filelist if not x.endswith("_cropped.jpg")]
@@ -493,8 +497,11 @@ def create_half_synth_chessboard_images(nr_chessboards, bg_images,
 		loc_bg = cv2.resize(loc_bg, (img_w, img_h), interpolation=cv2.INTER_AREA)
 		bg_images_arrs.append(loc_bg)
 
+	os.makedirs(os.path.join(output_dir, "ground_truths"), exist_ok=True)
 
 	for i in range(nr_chessboards):
+
+		shadow_angle = np.random.uniform(10, 180)
 
 		chessboard_idx = choice(range(N_cb))
 		with open(whole_cb_files[chessboard_idx], "r") as f:
@@ -519,7 +526,7 @@ def create_half_synth_chessboard_images(nr_chessboards, bg_images,
 
 		bg_img = choice(bg_images_arrs)
 
-		ids_pieces, names_pieces, body_id, occupied_spots = create_one_halfsynth(rim_to_tile, bg_img)
+		ids_pieces, names_pieces, body_id, occupied_spots = create_one_halfsynth(rim_to_tile)
 
 		print("body_id: ", body_id)
 		dist = np.random.uniform(*dist_range)
@@ -572,18 +579,45 @@ def create_half_synth_chessboard_images(nr_chessboards, bg_images,
 			full_canvas[y_min:y_max+1, x_min:x_max+1] = np.transpose(resized_cb, (1,0,2))
 
 			rgb_array[green_mask] = full_canvas[green_mask]
+
+			tile_width_rescaled = target_width / (8 + 2 * rim_to_tile)
+			rim_width_rescaled = rim_to_tile * tile_width_rescaled
+
+			tile_height_rescaled = target_height / (8 + 2 * rim_to_tile)
+			rim_height_rescaled = rim_to_tile * tile_height_rescaled
+
+			playable_cb_rescaled = [
+				[y_min+rim_height_rescaled, x_min + rim_width_rescaled], 
+				[y_min+rim_height_rescaled, x_min + rim_width_rescaled + 8 * tile_width_rescaled],
+				[y_min + rim_height_rescaled + 8 * tile_height_rescaled, x_min + rim_width_rescaled],
+				[y_min + rim_height_rescaled + 8 * tile_height_rescaled, x_min+  rim_width_rescaled + 8 * tile_width_rescaled]
+			]
+			playable_cb_rescaled = canonical_corner_order(playable_cb_rescaled)
+			playable_cb_rescaled = [[int(x), int(y)] for x, y in playable_cb_rescaled]
 		else:
 			raise ValueError("board_mask after getCameraImage is empty")
 
 		# shadows
-		rgb_array = paint_shadows(rgb_array, )
 
 		# rgb_array = np.where(green_mask[:, :, None], resized_cb, rgb_array)
+
+		shadow_x_direction = 2*(np.random.uniform() > 0.5 - 1) * 10
+		shadow_y_direction = 2*(np.random.uniform() > 0.5 - 1) * 10
+
+		bg_img = choice(bg_images_arrs)
+		bg_img = add_directional_board_shadow(bg_img, board_mask * 255, offset=(0,0), opacity=0.65, blur_ksize=45)
+		bg_img = add_directional_board_shadow(bg_img, board_mask * 255, offset=(shadow_x_direction, shadow_y_direction), opacity=0.4, blur_ksize=12)
+
 		final_img = np.where(board_mask[:, :, None] == 1, rgb_array, bg_img)
+		final_img = paint_shadows(final_img, occupied_spots, tile_width_rescaled, x_min, y_min, shadow_angle=shadow_angle, opacity=0.4)
 		final_img = cv2.cvtColor(final_img, cv2.COLOR_RGB2BGR)
 
 		fname = os.path.join(output_dir, f"chessboard_synth_{i}.jpg")
 		cv2.imwrite(fname, final_img)
+
+		with open(os.path.join(output_dir, "ground_truths", f"chessboard_synth_{i}.json"), "w") as f:
+			print(playable_cb_rescaled)
+			json.dump({"inner_board" :playable_cb_rescaled}, f)
 
 		p.removeBody(body_id)
 		for ids in ids_pieces:
@@ -616,7 +650,7 @@ if __name__ == '__main__':
 	physics_client = p.connect(p.DIRECT)
 
 	global shape_cache
-	shape_cache, height_cache = initialise_shapes_cache()
+	shape_cache = initialise_shapes_cache()
 
 	os.makedirs(output_dir, exist_ok=True)
 

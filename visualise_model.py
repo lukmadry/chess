@@ -25,7 +25,6 @@ if __name__ == "__main__":
 	parser.add_argument("--epoch_to_load", type=int, default=-1)
 	args = parser.parse_args()
 
-	
 	chckpt_path = model_path_from_date(args.last_model_date, args.epoch_to_load, args.no_model)
 	base_chckpt_path = os.path.dirname(chckpt_path)
 	model = PretrainedSmallChessBoardRegressor()
