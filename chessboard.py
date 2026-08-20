@@ -465,9 +465,44 @@ def create_one_halfsynth(rim_to_tile,
 
 	return ids_of_pieces_on_board, names_pieces_on_board, body_id, occupied_spots
 
+def _rotate_coords(cb_coords, rot_matrix):
+	raw_pts = np.array(cb_coords['inner_board'], dtype=np.float32)
+    # swaps are here due to opencv coordinates ordering
+    pts_xy = raw_pts[:, [1, 0]] if raw_pts.shape[1] == 2 else raw_pts
+
+    pts_homog = np.hstack([pts_xy, np.ones((len(pts_xy), 1), dtype=np.float32)])
+    new_pts_xy = pts_homog @ rot_matrix.T
+    new_cb = new_pts_xy[:, [1, 0]]
+
+    return new_cb
+
+def rotate_and_crop(img, playable_cb, whole_cb, target_size, angle_range=(-5, 5)):
+    h, w = img.shape[:2]
+    rotated_im, rot_matrix = apply_rotation(img, angle_range=angle_range, scale=1.0, 
+                                            scale_range=None, return_matrix=True)
+
+    new_whole_cb = _rotate_coords(whole_cb, rot_matrix)
+    new_playable_cb = _rotate_coords(playable_cb, rot_matrix)
+
+    min_horizontal = new_whole_cb[:, 0].min()
+    max_horizontal = new_whole_cb[:, 0].max()
+    min_vertical = new_whole_cb[:, 1].min()
+    max_vertical = new_whole_cb[:, 1].max()
+
+    new_min_horizontal = np.random.randint(int(min_horizontal/2))
+    new_max_horizontal = np.random.randint(max_horizontal + int((h-max_horizontal)/2), h)
+    new_min_vertical = np.random.randint(int(min_vertical/2))
+    new_max_vertical = np.random.randint(max_vertical + int((w-max_vertical)/2), w)
+
+    new_whole_cb[:, 0] -= new_min_horizontal
+    new_whole_cb[:, 1] -= new_min_vertical
+
+
+    return rotated_im[new_min_horizontal:new_max_horizontal, new_min_vertical:new_max_vertical], new_whole_cb.astype(np.int32), new_playable_cb.astype(np.int32)
+
 # TODO add permutations ?
 def create_half_synth_chessboard_images(nr_chessboards, bg_images,
-	chessboard_images_dir, output_dir, playable_folder="playable_chessboard", whole_folder="whole_chessboard", img_w=640, img_h=480,
+	chessboard_images_dir, output_dir, playable_folder="playable_chessboard", whole_folder="whole_chessboard", target_w=640, target_h=480,
 	dist_range=(0.4, 0.7), yaw_range=(-5,5), pitch=-89.5, shadow_angle=30):
 
 	chessboard_images_filelist = glob.glob(os.path.join(chessboard_images_dir, "*.jpg")) # note that we are only considering non-cropped versions !
@@ -484,6 +519,9 @@ def create_half_synth_chessboard_images(nr_chessboards, bg_images,
 	N_cb = len(whole_cb_files)
 
 	# p.resetSimulation()
+
+	img_w = int( 1.2 * target_w )
+	img_h = int( 1.2 * target_h )
 
 	proj_mat = p.computeProjectionMatrixFOV(fov=60, aspect=float(img_w)/img_h, nearVal=0.1, farVal=3.0)
 	proj_mat_arr = np.array(proj_mat).reshape(4,4).T
@@ -511,8 +549,6 @@ def create_half_synth_chessboard_images(nr_chessboards, bg_images,
 		with open(playable_cb_files[chessboard_idx], "r") as f:
 			playable_cb = json.load(f)['inner_board']
 			playable_cb = canonical_corner_order(playable_cb)
-
-		print("playable part of chessboard ", playable_cb)
 
 		whole_cb_width = whole_cb[1][1] - whole_cb[0][1] # TODO to be double checked
 		playable_cb_width = playable_cb[1][1] - playable_cb[0][1]
@@ -594,10 +630,15 @@ def create_half_synth_chessboard_images(nr_chessboards, bg_images,
 			]
 			playable_cb_rescaled = canonical_corner_order(playable_cb_rescaled)
 			playable_cb_rescaled = [[int(x), int(y)] for x, y in playable_cb_rescaled]
+
+			whole_cb_rescaled = [
+				[y_min, x_min], 
+				[y_min, x_min + 2* rim_width_rescaled + 8 * tile_width_rescaled],
+				[y_min + 2* rim_height_rescaled + 8 * tile_height_rescaled, x_min],
+				[y_min + 2*rim_height_rescaled + 8 * tile_height_rescaled, x_min + 2 *rim_width_rescaled + 8 * tile_width_rescaled]
+			]
 		else:
 			raise ValueError("board_mask after getCameraImage is empty")
-
-		# shadows
 
 		# rgb_array = np.where(green_mask[:, :, None], resized_cb, rgb_array)
 
@@ -612,12 +653,20 @@ def create_half_synth_chessboard_images(nr_chessboards, bg_images,
 		final_img = paint_shadows(final_img, occupied_spots, tile_width_rescaled, x_min, y_min, shadow_angle=shadow_angle, opacity=0.4)
 		final_img = cv2.cvtColor(final_img, cv2.COLOR_RGB2BGR)
 
+		# final_img, playable_cb_rescaled = crop_and_rotate(final_img, playable_cb_rescaled, whole_cb_rescaled)
+
 		fname = os.path.join(output_dir, f"chessboard_synth_{i}.jpg")
 		cv2.imwrite(fname, final_img)
 
 		with open(os.path.join(output_dir, "ground_truths", f"chessboard_synth_{i}.json"), "w") as f:
 			print(playable_cb_rescaled)
 			json.dump({"inner_board" :playable_cb_rescaled}, f)
+
+		with open(os.path.join(output_dir, "ground_truths", f"chessboard_synth_{i}_whole_cb.json"), "w") as f:
+			print(whole_cb_rescaled)
+			whole_cb_rescaled = canonical_corner_order(whole_cb_rescaled)
+			whole_cb_rescaled = [[int(x), int(y)] for x, y in whole_cb_rescaled]
+			json.dump({"inner_board": whole_cb_rescaled}, f)
 
 		p.removeBody(body_id)
 		for ids in ids_pieces:

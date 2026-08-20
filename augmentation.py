@@ -10,6 +10,8 @@ from random import choice, sample, choices
 from functools import partial
 from PIL import Image
 
+from helpers import none_sentinel
+
 
 # base functions
 def apply_rgb_shift(img, max_rgb_shift=3):
@@ -42,13 +44,20 @@ def convert_scale_abs(img, alpha_range=(0.7, 1.3), beta_range=(-30, 30)):
 	return cv2.convertScaleAbs(img, alpha=alph, beta=bet)
 
 
-def apply_rotation(img, angle_range=(-180, 180), scale_range=(0.9, 1.2)):
+def apply_rotation(img, angle_range=(-180, 180), scale_range=(0.9, 1.2), 
+                   scale=None, return_matrix=False, rotation_center=None):
+	none_sentinel(scale_range=scale_range, scale=scale)
+    
 	angle = np.random.uniform(*angle_range)
+    # print(angle)
 	h, w = img.shape[:2]
-	center = (h // 2, w // 2)
-	scale = np.random.uniform(*scale_range)
+	center = (float(h) / 2.0, float(w) / 2.0) if rotation_center is None else rotation_center
+	if scale_range is not None:
+		scale = np.random.uniform(*scale_range)
 	M = cv2.getRotationMatrix2D(center, angle, scale)
 	rot = cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_REFLECT)
+	if return_matrix:
+		return rot, M
 	return rot
 
 
@@ -196,6 +205,9 @@ def add_directional_board_shadow(background, board_mask, offset=(15, 20), blur_k
 
 	shadowed_bg = (background.astype(np.float32) * shadow_factor).clip(0, 255).astype(np.uint8)
 	return shadowed_bg
+
+def add_objects_to_the_image(whole_image, protected_box, shapes_list=None, textures_list=None, shadows=True):
+	pass
 
 raw_image_shifts_fns = [apply_rgb_shift, apply_hue_shift, convert_scale_abs, apply_rotation, apply_random_crop, apply_gaussian_blur]
 final_image_shifts_fns = [apply_rgb_shift, apply_hue_shift, convert_scale_abs, apply_gaussian_blur, apply_random_cutout, apply_mean_cutout, apply_blob_shadows, add_gaussian_noise]

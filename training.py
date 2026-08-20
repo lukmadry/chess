@@ -98,7 +98,7 @@ class ChessDataset(Dataset):
 		self.labels = []
 		self.height = height
 		self.width = width
-		self.adaptive_size = adaptive_size # in this case we will always normalise to [0,1] here
+		self.adaptive_size = adaptive_size # in this case we will always normalise to [0,1], but not here, only later in __getitem__
 		self.normalised_labels = normalised_labels
 
 		if adaptive_size:
