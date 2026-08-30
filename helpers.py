@@ -317,7 +317,7 @@ def display_grid_with_labels(model, display_images, image_array, gt_list, image_
         im = np.array(im, dtype=np.uint8)
         h, w = im.shape[:2]
         if with_ground_truths and not model_for_cas:
-            print(gt[k])
+            # print(gt[k])
             labels_to_pixels(im, predictions[k].detach().numpy())
             pred_canonical = predictions[k].detach().numpy()
             pred_canonical = list(zip(pred_canonical[0::2], pred_canonical[1::2]))

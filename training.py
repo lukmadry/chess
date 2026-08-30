@@ -852,6 +852,7 @@ if __name__ == "__main__":
 	start_epoch = args.epoch_to_restart + 1
 	# base_chckpt_path = os.path.dirname(chckpt_path)
 
+	errors = []
 	for t in range(start_epoch, start_epoch + args.epochs):
 		print(f"Epoch: {t+1}\n----------------")
 		train_loop_fn(train_loader, regressor, base_loss_fn=loss_fn, optimizer=optimizer, angle_penalty_weight=args.angle_penalty)
