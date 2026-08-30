@@ -18,6 +18,7 @@ import cv2
 
 from helpers import project_world_pixel, get_coordinates_from_half_extents, compute_robust_view_matrix, pan_camera_relative, canonical_corner_order, none_sentinel
 from augmentation import roughening_final_image_shifts_names, final_image_shifts_dict, apply_rotation, add_directional_board_shadow, apply_hue_shift, apply_value_shift_deterministic
+from augmentation import add_objects_to_the_image
 
 post_processing_fns = [final_image_shifts_dict[fn] for fn in roughening_final_image_shifts_names]
 MAX_WORKERS = 4
@@ -402,7 +403,7 @@ def create_segmentation_mask(corners, height=None, width=None, image=None):
 	cv2.fillpoly(mask, pts, color=1)
 	return mask
 
-# I think it may turn out to be a bit useless...
+# TODO I think it may turn out to be a bit useless...
 def load_cropped_texture(image_filepath, corners=None, corner_filepath=None, 
 	reorient_corners=False, height_axis=1, target_size=(480, 640)):
 
@@ -465,45 +466,58 @@ def create_one_halfsynth(rim_to_tile,
 
 	return ids_of_pieces_on_board, names_pieces_on_board, body_id, occupied_spots
 
+
 def _rotate_coords(cb_coords, rot_matrix):
-	raw_pts = np.array(cb_coords['inner_board'], dtype=np.float32)
-    # swaps are here due to opencv coordinates ordering
-    pts_xy = raw_pts[:, [1, 0]] if raw_pts.shape[1] == 2 else raw_pts
+	raw_pts = np.array(cb_coords, dtype=np.float32)
+	# swaps are here due to opencv coordinates ordering
+	pts_xy = raw_pts[:, [1, 0]] if raw_pts.shape[1] == 2 else raw_pts
 
-    pts_homog = np.hstack([pts_xy, np.ones((len(pts_xy), 1), dtype=np.float32)])
-    new_pts_xy = pts_homog @ rot_matrix.T
-    new_cb = new_pts_xy[:, [1, 0]]
+	pts_homog = np.hstack([pts_xy, np.ones((len(pts_xy), 1), dtype=np.float32)])
+	new_pts_xy = pts_homog @ rot_matrix.T
+	new_cb = new_pts_xy[:, [1, 0]]
+	return new_cb
 
-    return new_cb
+def rotate_and_crop(img, playable_cb, whole_cb, angle_range=(-5, 5), max_attempts=10):
+	h, w = img.shape[:2]
+	waiting_for_correct_rotation = True
+	k = 0
+	while waiting_for_correct_rotation:
+		rotated_im, rot_matrix = apply_rotation(img, angle_range=angle_range, scale=1.0, 
+												scale_range=None, return_matrix=True)
 
-def rotate_and_crop(img, playable_cb, whole_cb, target_size, angle_range=(-5, 5)):
-    h, w = img.shape[:2]
-    rotated_im, rot_matrix = apply_rotation(img, angle_range=angle_range, scale=1.0, 
-                                            scale_range=None, return_matrix=True)
+		new_whole_cb = _rotate_coords(whole_cb, rot_matrix)
+		new_playable_cb = _rotate_coords(playable_cb, rot_matrix)
 
-    new_whole_cb = _rotate_coords(whole_cb, rot_matrix)
-    new_playable_cb = _rotate_coords(playable_cb, rot_matrix)
+		min_horizontal = new_whole_cb[:, 0].min()
+		max_horizontal = new_whole_cb[:, 0].max()
+		min_vertical = new_whole_cb[:, 1].min()
+		max_vertical = new_whole_cb[:, 1].max()
 
-    min_horizontal = new_whole_cb[:, 0].min()
-    max_horizontal = new_whole_cb[:, 0].max()
-    min_vertical = new_whole_cb[:, 1].min()
-    max_vertical = new_whole_cb[:, 1].max()
+		if min_horizontal < 0 or max_horizontal > h or min_vertical < 0 or max_vertical > w:
+			waiting_for_correct_rotation = True
+		else:
+			waiting_for_correct_rotation = False
 
-    new_min_horizontal = np.random.randint(int(min_horizontal/2))
-    new_max_horizontal = np.random.randint(max_horizontal + int((h-max_horizontal)/2), h)
-    new_min_vertical = np.random.randint(int(min_vertical/2))
-    new_max_vertical = np.random.randint(max_vertical + int((w-max_vertical)/2), w)
+		k += 1
 
-    new_whole_cb[:, 0] -= new_min_horizontal
-    new_whole_cb[:, 1] -= new_min_vertical
+		if k > max_attempts:
+			print(f"tried finding a good rotation {max_attempts} times, will return unmodified image")
+			return img, whole_cb, playable_cb
 
+	new_min_horizontal = np.random.randint(int(min_horizontal/2))
+	new_max_horizontal = np.random.randint(max_horizontal + int((h-max_horizontal)/2), h)
+	new_min_vertical = np.random.randint(int(min_vertical/2))
+	new_max_vertical = np.random.randint(max_vertical + int((w-max_vertical)/2), w)
 
-    return rotated_im[new_min_horizontal:new_max_horizontal, new_min_vertical:new_max_vertical], new_whole_cb.astype(np.int32), new_playable_cb.astype(np.int32)
+	new_whole_cb[:, 0] -= new_min_horizontal
+	new_whole_cb[:, 1] -= new_min_vertical
+
+	return rotated_im[new_min_horizontal:new_max_horizontal, new_min_vertical:new_max_vertical], new_whole_cb.astype(np.int32), new_playable_cb.astype(np.int32)
 
 # TODO add permutations ?
 def create_half_synth_chessboard_images(nr_chessboards, bg_images,
 	chessboard_images_dir, output_dir, playable_folder="playable_chessboard", whole_folder="whole_chessboard", target_w=640, target_h=480,
-	dist_range=(0.4, 0.7), yaw_range=(-5,5), pitch=-89.5, shadow_angle=30):
+	dist_range=(0.4, 1.0), yaw_range=(-5,5), pitch=-89.5, shadow_angle=30):
 
 	chessboard_images_filelist = glob.glob(os.path.join(chessboard_images_dir, "*.jpg")) # note that we are only considering non-cropped versions !
 	chessboard_images_filelist = [x for x in chessboard_images_filelist if not x.endswith("_cropped.jpg")]
@@ -637,6 +651,9 @@ def create_half_synth_chessboard_images(nr_chessboards, bg_images,
 				[y_min + 2* rim_height_rescaled + 8 * tile_height_rescaled, x_min],
 				[y_min + 2*rim_height_rescaled + 8 * tile_height_rescaled, x_min + 2 *rim_width_rescaled + 8 * tile_width_rescaled]
 			]
+
+			whole_cb_rescaled = canonical_corner_order(whole_cb_rescaled)
+			whole_cb_rescaled = [[int(x), int(y)] for x, y in whole_cb_rescaled]
 		else:
 			raise ValueError("board_mask after getCameraImage is empty")
 
@@ -645,7 +662,8 @@ def create_half_synth_chessboard_images(nr_chessboards, bg_images,
 		shadow_x_direction = 2*(np.random.uniform() > 0.5 - 1) * 10
 		shadow_y_direction = 2*(np.random.uniform() > 0.5 - 1) * 10
 
-		bg_img = choice(bg_images_arrs)
+		bg_img = choice(bg_images_arrs).copy()
+		bg_img = add_objects_to_the_image(bg_img)
 		bg_img = add_directional_board_shadow(bg_img, board_mask * 255, offset=(0,0), opacity=0.65, blur_ksize=45)
 		bg_img = add_directional_board_shadow(bg_img, board_mask * 255, offset=(shadow_x_direction, shadow_y_direction), opacity=0.4, blur_ksize=12)
 
@@ -653,19 +671,24 @@ def create_half_synth_chessboard_images(nr_chessboards, bg_images,
 		final_img = paint_shadows(final_img, occupied_spots, tile_width_rescaled, x_min, y_min, shadow_angle=shadow_angle, opacity=0.4)
 		final_img = cv2.cvtColor(final_img, cv2.COLOR_RGB2BGR)
 
+		final_img, whole_cb_rescaled, playable_cb_rescaled = rotate_and_crop(final_img, 
+			playable_cb=playable_cb_rescaled, 
+			whole_cb=whole_cb_rescaled, 
+			angle_range=yaw_range)
+
 		# final_img, playable_cb_rescaled = crop_and_rotate(final_img, playable_cb_rescaled, whole_cb_rescaled)
 
 		fname = os.path.join(output_dir, f"chessboard_synth_{i}.jpg")
 		cv2.imwrite(fname, final_img)
 
 		with open(os.path.join(output_dir, "ground_truths", f"chessboard_synth_{i}.json"), "w") as f:
-			print(playable_cb_rescaled)
+			# print(playable_cb_rescaled)
+			playable_cb_rescaled = playable_cb_rescaled.tolist()
 			json.dump({"inner_board" :playable_cb_rescaled}, f)
 
 		with open(os.path.join(output_dir, "ground_truths", f"chessboard_synth_{i}_whole_cb.json"), "w") as f:
-			print(whole_cb_rescaled)
-			whole_cb_rescaled = canonical_corner_order(whole_cb_rescaled)
-			whole_cb_rescaled = [[int(x), int(y)] for x, y in whole_cb_rescaled]
+			# print(whole_cb_rescaled)
+			whole_cb_rescaled = whole_cb_rescaled.tolist()
 			json.dump({"inner_board": whole_cb_rescaled}, f)
 
 		p.removeBody(body_id)
@@ -687,7 +710,13 @@ if __name__ == '__main__':
 	parser.add_argument("--overwrite", action=argparse.BooleanOptionalAction)
 	parser.add_argument("--yaw_range", nargs=2, type=int, default=(-90,90))
 
+	parser.add_argument("--test_run", action=argparse.BooleanOptionalAction)
+	parser.add_argument("--test_run_marker", type=str)
+
 	args = parser.parse_args()
+
+	if args.test_run and args.test_run_marker is None:
+		raise ValueError("To do a test run you need to give test_run_marker, otherwise the script will not be able to check if it passed correctly.")
 
 	white_tiles = glob.glob(os.path.join(args.white_tiles, "*.jpg"))
 	dark_tiles = glob.glob(os.path.join(args.dark_tiles, "*.jpg"))
@@ -722,3 +751,7 @@ if __name__ == '__main__':
 			overwrite=args.overwrite,
 			yaw_range=args.yaw_range,
 			)
+
+	if args.test_run:
+		with open(args.test_run_marker, "w") as f:
+			f.write("SUCCESS")

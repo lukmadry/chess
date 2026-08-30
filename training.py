@@ -25,8 +25,6 @@ from augmentation import final_image_shifts_dict
 # TODO move some stuff to a separate file, loss functions to losses.py, training and testing loops to loops.py or sth
 # TODO you unflatten and then flatten ground truths, this is very redundant, fix it
 # TODO the same way you diagnosis error in pixels in test loop, add diagnostics of angles
-# TODO add training on (center_x, center_y, yaw, width), maybe it will converge faster
-
 
 def create_input_transform(input_size):
 	_input_transform = transforms.Compose(
@@ -68,7 +66,6 @@ class ChessDataset(Dataset):
 		allowed_dist=None, convert_to_cas=False, normalised_labels=False, input_size=224, adaptive_size=False,
 		height=480., width=640., max_angle=20., verify_angle=False, keep_orig_bb=False, return_normalised_image=True):
 		"""
-		
 		if adaptive_size = True and normalised_labels = True, then we will load unnormalised labels in the initialisation phase and normalise them later
 
 		"""
@@ -169,7 +166,8 @@ class ChessDataset(Dataset):
 			self.images_list = self.images_list[:size]
 			self.labels = self.labels[:size]
 
-		self._unify_orientation_of_labels()
+		if not convert_to_cas:
+			self._unify_orientation_of_labels()
 
 	def __len__(self):
 		return len(self.images_list)
@@ -658,8 +656,8 @@ def test_loop_cas(dataloader, model, base_loss_fn, angle_penalty_weight=0.5, dum
 if __name__ == "__main__":
 	# TODO split arguments into categories to make this wall of text more readable and easier to navigate
 	parser = argparse.ArgumentParser()
-	parser.add_argument("--synth_input_dir", type=str, required=True, nargs='+') # this will not be augmented as it is already augmented during image generation
-	parser.add_argument("--auth_input_dir", type=str, required=True, nargs='+') # this will be augmented additionally. 
+	parser.add_argument("--synth_input_dir", type=str, nargs='+') # this will not be augmented as it is already augmented during image generation
+	parser.add_argument("--auth_input_dir", type=str, nargs='+') # this will be augmented additionally. 
 	parser.add_argument("--synth_labels_dir", type=str, nargs='+')
 	parser.add_argument("--auth_labels_dir", type=str, nargs='+')
 
@@ -684,9 +682,18 @@ if __name__ == "__main__":
 	parser.add_argument("--epoch_to_restart", type=int, default=-1)
 
 	parser.add_argument("--augmentation_factor", default=1, type=int)
+
+	parser.add_argument("--test_run", action=argparse.BooleanOptionalAction)
+	parser.add_argument("--test_run_marker", type=str)
 	args = parser.parse_args()
 
+	# TODO ADD A ROUTER FOR TRAINING
+	if args.synth_input_dir is None and args.auth_input_dir is None:
+		raise ValueError("you need to pass at least one of synth_input_dir or auth_input_dir")
+
 	assert args.model in ["mobile", "resnet", "from_scratch"]
+	if args.test_run and args.test_run_marker is None:
+		raise ValueError("To do a test run you need to give test_run_marker, otherwise the script will not be able to check if it passed correctly.")
 
 	if args.loss == 'wing' and args.cas:
 		raise NotImplementedError("WingLoss and center-angle-size together not supported yet.")
@@ -721,22 +728,17 @@ if __name__ == "__main__":
 	auth_chess_dataset_kwargs['adaptive_size'] = True
 	auth_chess_dataset_kwargs['return_normalised_image'] = False
 
-	if args.synth_labels_dir is None:
-		synth_ld = [None] * len(args.synth_input_dir)
-	else:
-		synth_ld = args.synth_labels_dir
-
-	if args.auth_labels_dir is None:
-		auth_ld = [None] * len(args.auth_input_dir)
-	else:
-		auth_ld = args.auth_labels_dir
-
 	val_loaders = []
 
 	synth_train_datasets = []
 	synth_val_datasets = []
 	generator = torch.Generator().manual_seed(421312)
 	if args.synth_input_dir is not None:
+
+		if args.synth_labels_dir is None:
+			synth_ld = [None] * len(args.synth_input_dir)
+		else:
+			synth_ld = args.synth_labels_dir
 
 		for input_dir, lab_dir in zip(args.synth_input_dir, synth_ld):
 			synth_chess_dataset = ChessDataset(images_dir=input_dir, labels_dir=lab_dir, **synth_chess_dataset_kwargs)
@@ -760,6 +762,11 @@ if __name__ == "__main__":
 	auth_val_datasets = []
 
 	if args.auth_input_dir is not None:
+
+		if args.auth_labels_dir is None:
+			auth_ld = [None] * len(args.auth_input_dir)
+		else:
+			auth_ld = args.auth_labels_dir
 
 		for input_dir, lab_dir in zip(args.auth_input_dir, auth_ld):
 			auth_chess_dataset_pure = ChessDataset(images_dir=input_dir, labels_dir=lab_dir, **auth_chess_dataset_kwargs)
@@ -845,3 +852,7 @@ if __name__ == "__main__":
 		torch.save(checkpoint, os.path.join(chckpt_path, f"epoch_{t}.pth"))
 		scheduler.step(val_pixel_error_axis_one + val_pixel_error_axis_two)
 		print(f"Current learning rate: {optimizer.param_groups[0]['lr']}")
+
+	if args.test_run:
+		with open(args.test_run_marker, "w") as f:
+			f.write("SUCCESS")

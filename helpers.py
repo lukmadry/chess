@@ -79,9 +79,9 @@ def vectorise(depth_check = 2):
         
     return decorator
 
-def model_path_from_date(last_model_date, training_epoch=None, no_model=None):
+def model_path_from_date(last_model_date, training_epoch=None, no_model=None, delimiter="-"):
     print('no_model arg ', no_model)
-    model_day = datetime.datetime.strptime(last_model_date, "%d/%m/%Y")
+    model_day = datetime.datetime.strptime(last_model_date, f"%d{delimiter}%m{delimiter}%Y")
     formatted_date = model_day.strftime("%A, %d. %B %Y")
     matching_checkpoints_by_date = glob.glob(os.path.join("checkpoints", formatted_date + "*"))
     matching_checkpoints_by_date = sorted(matching_checkpoints_by_date, key=lambda x: datetime.datetime.strptime(x.split("/")[-1], "%A, %d. %B %Y %I:%M%p"))

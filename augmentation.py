@@ -206,8 +206,34 @@ def add_directional_board_shadow(background, board_mask, offset=(15, 20), blur_k
 	shadowed_bg = (background.astype(np.float32) * shadow_factor).clip(0, 255).astype(np.uint8)
 	return shadowed_bg
 
-def add_objects_to_the_image(whole_image, protected_box, shapes_list=None, textures_list=None, shadows=True):
-	pass
+def add_objects_to_the_image(whole_image, max_obj=4, max_corners=7, max_side_length=100):
+	nr_obj = np.random.randint(max_obj)
+	h, w = whole_image.shape[:2]
+	new_obj = np.zeros_like(whole_image)
+
+	for i in range(max_obj):
+		poly = np.zeros_like(whole_image)
+
+		no_corners = np.random.randint(3, max(3, max_corners))
+		points = [(np.random.randint(0, h), np.random.randint(0, w))]
+		for pt in range(1, no_corners):
+
+			pt_horizontal = np.random.randint(points[pt-1][0]-max_side_length, points[pt-1][0]+max_side_length)
+			pt_horizontal = min(h, max(0, pt_horizontal))
+			pt_vertical = np.random.randint(points[pt-1][1]-max_side_length, points[pt-1][1]+max_side_length)
+			pt_vertical = min(w, max(0, pt_vertical))
+
+			points.append((pt_horizontal, pt_vertical))
+							
+		cv2.fillConvexPoly(poly, np.array(points, dtype=np.int32), (np.random.randint(255), np.random.randint(255), np.random.randint(255)))
+		blur = 2*np.random.randint(7)+1
+		poly = cv2.GaussianBlur(poly, (blur, blur), 0)
+		new_obj[poly > 0] = poly[poly > 0]
+
+	whole_image_upd = whole_image.copy()
+	whole_image_upd[new_obj > 0] = new_obj[new_obj > 0]
+	return whole_image_upd
+	
 
 raw_image_shifts_fns = [apply_rgb_shift, apply_hue_shift, convert_scale_abs, apply_rotation, apply_random_crop, apply_gaussian_blur]
 final_image_shifts_fns = [apply_rgb_shift, apply_hue_shift, convert_scale_abs, apply_gaussian_blur, apply_random_cutout, apply_mean_cutout, apply_blob_shadows, add_gaussian_noise]
