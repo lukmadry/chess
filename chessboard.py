@@ -493,7 +493,7 @@ def rotate_and_crop(img, playable_cb, whole_cb, angle_range=(-5, 5), max_attempt
 		min_vertical = new_whole_cb[:, 1].min()
 		max_vertical = new_whole_cb[:, 1].max()
 
-		if min_horizontal < 0 or max_horizontal > h or min_vertical < 0 or max_vertical > w:
+		if min_horizontal <= 0 or max_horizontal >= h or min_vertical <= 0 or max_vertical >= w:
 			waiting_for_correct_rotation = True
 		else:
 			waiting_for_correct_rotation = False
@@ -501,22 +501,23 @@ def rotate_and_crop(img, playable_cb, whole_cb, angle_range=(-5, 5), max_attempt
 		k += 1
 
 		if k > max_attempts:
-			print(f"tried finding a good rotation {max_attempts} times, will return unmodified image")
-			return img, whole_cb, playable_cb
+			# print(f"tried finding a good rotation {max_attempts} times, will return unmodified image")
+			return img, whole_cb, playable_cb, 1
 
-	new_min_horizontal = np.random.randint(int(min_horizontal/2))
+	new_min_horizontal = np.random.randint(int(min_horizontal/2)) if int(min_horizontal/2) else 0
 	new_max_horizontal = np.random.randint(max_horizontal + int((h-max_horizontal)/2), h)
-	new_min_vertical = np.random.randint(int(min_vertical/2))
+	new_min_vertical = np.random.randint(int(min_vertical/2)) if int(min_vertical/2) else 0
 	new_max_vertical = np.random.randint(max_vertical + int((w-max_vertical)/2), w)
 
 	new_whole_cb[:, 0] -= new_min_horizontal
 	new_whole_cb[:, 1] -= new_min_vertical
 
-	return rotated_im[new_min_horizontal:new_max_horizontal, new_min_vertical:new_max_vertical], new_whole_cb.astype(np.int32), new_playable_cb.astype(np.int32)
+	return rotated_im[new_min_horizontal:new_max_horizontal, new_min_vertical:new_max_vertical], new_whole_cb.astype(np.int32), new_playable_cb.astype(np.int32), 0
 
 # TODO add permutations ?
 def create_half_synth_chessboard_images(nr_chessboards, bg_images,
-	chessboard_images_dir, output_dir, playable_folder="playable_chessboard", whole_folder="whole_chessboard", target_w=640, target_h=480,
+	chessboard_images_dir, output_dir, playable_folder="playable_chessboard", 
+	whole_folder="whole_chessboard", target_w=640, target_h=480, verbose=True, divisor=100,
 	dist_range=(0.4, 1.0), yaw_range=(-5,5), pitch=-89.5, shadow_angle=30):
 
 	chessboard_images_filelist = glob.glob(os.path.join(chessboard_images_dir, "*.jpg")) # note that we are only considering non-cropped versions !
@@ -550,8 +551,13 @@ def create_half_synth_chessboard_images(nr_chessboards, bg_images,
 		bg_images_arrs.append(loc_bg)
 
 	os.makedirs(os.path.join(output_dir, "ground_truths"), exist_ok=True)
+	nb_not_rotated_imgs = 0
 
 	for i in range(nr_chessboards):
+
+		progress = i / float(nr_chessboards)
+		if verbose and i % divisor == 0:
+			print(f"Progress made: {100*progress:.3f}%. Did not rotate {nb_not_rotated_imgs}/{i} images", end="\r")
 
 		shadow_angle = np.random.uniform(10, 180)
 
@@ -578,7 +584,7 @@ def create_half_synth_chessboard_images(nr_chessboards, bg_images,
 
 		ids_pieces, names_pieces, body_id, occupied_spots = create_one_halfsynth(rim_to_tile)
 
-		print("body_id: ", body_id)
+		# print("body_id: ", body_id)
 		dist = np.random.uniform(*dist_range)
 		yaw = 0
 
@@ -671,11 +677,12 @@ def create_half_synth_chessboard_images(nr_chessboards, bg_images,
 		final_img = paint_shadows(final_img, occupied_spots, tile_width_rescaled, x_min, y_min, shadow_angle=shadow_angle, opacity=0.4)
 		final_img = cv2.cvtColor(final_img, cv2.COLOR_RGB2BGR)
 
-		final_img, whole_cb_rescaled, playable_cb_rescaled = rotate_and_crop(final_img, 
+		final_img, whole_cb_rescaled, playable_cb_rescaled, status_code = rotate_and_crop(final_img, 
 			playable_cb=playable_cb_rescaled, 
 			whole_cb=whole_cb_rescaled, 
 			angle_range=yaw_range)
 
+		nb_not_rotated_imgs += status_code
 		# final_img, playable_cb_rescaled = crop_and_rotate(final_img, playable_cb_rescaled, whole_cb_rescaled)
 
 		fname = os.path.join(output_dir, f"chessboard_synth_{i}.jpg")
@@ -683,12 +690,14 @@ def create_half_synth_chessboard_images(nr_chessboards, bg_images,
 
 		with open(os.path.join(output_dir, "ground_truths", f"chessboard_synth_{i}.json"), "w") as f:
 			# print(playable_cb_rescaled)
-			playable_cb_rescaled = playable_cb_rescaled.tolist()
+			if hasattr(playable_cb_rescaled, 'tolist'):
+				playable_cb_rescaled = playable_cb_rescaled.tolist()
 			json.dump({"inner_board" :playable_cb_rescaled}, f)
 
 		with open(os.path.join(output_dir, "ground_truths", f"chessboard_synth_{i}_whole_cb.json"), "w") as f:
 			# print(whole_cb_rescaled)
-			whole_cb_rescaled = whole_cb_rescaled.tolist()
+			if hasattr(whole_cb_rescaled, 'tolist'):
+				whole_cb_rescaled = whole_cb_rescaled.tolist()
 			json.dump({"inner_board": whole_cb_rescaled}, f)
 
 		p.removeBody(body_id)
@@ -710,7 +719,7 @@ if __name__ == '__main__':
 	parser.add_argument("--overwrite", action=argparse.BooleanOptionalAction)
 	parser.add_argument("--yaw_range", nargs=2, type=int, default=(-90,90))
 
-	parser.add_argument("--test_run", action=argparse.BooleanOptionalAction)
+	parser.add_argument("--test_run", action=argparse.BooleanOptionalAction, default=False)
 	parser.add_argument("--test_run_marker", type=str)
 
 	args = parser.parse_args()

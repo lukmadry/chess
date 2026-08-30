@@ -10,6 +10,7 @@ from PIL import Image
 import cv2
 import urllib.request
 
+print("imported all packages, will now check if pieces are available")
 GITHUB_RAW_BASE = "https://raw.githubusercontent.com/scenevr/chess/master/models/"
 PIECES = ["pawn", "rook", "knight", "bishop", "queen", "king"]
 

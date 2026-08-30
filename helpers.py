@@ -24,7 +24,7 @@ def none_sentinel(**kwargs):
         raise ValueError(f"Expected exactly one non-None argument among ({all_keys})"
             f"but found non-None values for {non_none_keys}")
 
-def canonical_corner_order(pts):
+def canonical_corner_order(pts, dtype=np.int32):
     """
     pts: array-like of 4 points [[y, x], ...]
     Returns array of 4 points ordered [Top-Left, Top-Right, Bottom-Right, Bottom-Left].
@@ -50,7 +50,7 @@ def canonical_corner_order(pts):
     canonical_pts[2] = pts[br_mask]
     canonical_pts[3] = pts[bl_mask]
     
-    return canonical_pts.astype(np.int32)
+    return canonical_pts.astype(dtype)
 
 def vectorise(depth_check = 2):
     if depth_check == 2:
@@ -317,11 +317,10 @@ def display_grid_with_labels(model, display_images, image_array, gt_list, image_
         im = np.array(im, dtype=np.uint8)
         h, w = im.shape[:2]
         if with_ground_truths and not model_for_cas:
-            # print(gt[k])
+            print(gt[k])
             labels_to_pixels(im, predictions[k].detach().numpy())
             pred_canonical = predictions[k].detach().numpy()
             pred_canonical = list(zip(pred_canonical[0::2], pred_canonical[1::2]))
-            # print("gt list ", gt[k])
             gt_to_pixels(im, gt[k])
             axis_one_error = sum([abs(x[0]-y[0]*h) for x, y in zip(gt[k], pred_canonical)])/4
             axis_two_error = sum([abs(x[1]-y[1]*w) for x, y in zip(gt[k], pred_canonical)])/4

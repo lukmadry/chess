@@ -16,7 +16,7 @@ from copy import deepcopy
 from PIL import Image
 from torch import nn
 from torch.utils.data import DataLoader, Dataset, random_split, ConcatDataset
-from torchvision.models import resnet34, ResNet34_Weights, mobilenet_v3_small, MobileNet_V3_Small_Weights
+from torchvision.models import resnet34, ResNet34_Weights, resnet50, ResNet50_Weights, mobilenet_v3_small, MobileNet_V3_Small_Weights
 from torchvision import transforms
 
 from helpers import display_grid_with_labels, convert_boxes_to_cas, cas_to_boxes, model_path_from_date, canonical_corner_order
@@ -24,7 +24,7 @@ from augmentation import final_image_shifts_dict
 
 # TODO move some stuff to a separate file, loss functions to losses.py, training and testing loops to loops.py or sth
 # TODO you unflatten and then flatten ground truths, this is very redundant, fix it
-# TODO the same way you diagnosis error in pixels in test loop, add diagnostics of angles
+# TODO the same way you diagnose error in pixels in test loop, add diagnostics of angles
 
 def create_input_transform(input_size):
 	_input_transform = transforms.Compose(
@@ -64,7 +64,8 @@ class ChessDataset(Dataset):
 
 	def __init__(self, images_dir, labels_dir=None, size=None, with_bright=False, filter_labels_params=False, 
 		allowed_dist=None, convert_to_cas=False, normalised_labels=False, input_size=224, adaptive_size=False,
-		height=480., width=640., max_angle=20., verify_angle=False, keep_orig_bb=False, return_normalised_image=True):
+		height=480., width=640., max_angle=20., verify_angle=False, keep_orig_bb=False, return_normalised_image=True,
+		print_labels_for_test=False):
 		"""
 		if adaptive_size = True and normalised_labels = True, then we will load unnormalised labels in the initialisation phase and normalise them later
 
@@ -167,7 +168,13 @@ class ChessDataset(Dataset):
 			self.labels = self.labels[:size]
 
 		if not convert_to_cas:
+			print("Will unify orientation of labels")
 			self._unify_orientation_of_labels()
+
+		if print_labels_for_test:
+			print("Printing 5 ground truths for debugging")
+			for k in range(5):
+				print(self.labels[k])
 
 	def __len__(self):
 		return len(self.images_list)
@@ -190,9 +197,6 @@ class ChessDataset(Dataset):
 		if self.return_normalised_image:
 			im = self._input_transform(im)
 
-		# print(f"[ChessDataset {id(self)} | dir={self.images_dir}] returning im type: {type(im)}")
-		# print("type of image returned by getitem")
-		# print(type(im), type(lab))
 		return im, lab
 
 	def _filter_images_with_no_labels(self):
@@ -210,8 +214,9 @@ class ChessDataset(Dataset):
 			raise ValueError("unifying orientation not applicable if targets are in CAS format")
 
 		new_labels = []
+		dtype = np.float32 if (self.normalised_labels or self.adaptive_size) else np.int32
 		for lab in self.labels:
-			_lab = canonical_corner_order(lab)
+			_lab = canonical_corner_order(lab, dtype)
 			new_labels.append(_lab)
 		self.labels = new_labels
 
@@ -372,23 +377,32 @@ class PretrainedSmallChessBoardRegressor(nn.Module):
 		return self.head(features)
 		
 class PretrainedChessboardRegressor(nn.Module):
-	def __init__(self, output_dim=8):
+	def __init__(self, output_dim=8, train_backbone=False):
 		super().__init__()
-		self.backbone = resnet34(weights=ResNet34_Weights.DEFAULT)
+		self.backbone = resnet50(weights=ResNet50_Weights.DEFAULT)
+		self.train_backbone = train_backbone
+		if not train_backbone:
+			for param in self.backbone.parameters():
+				param.requires_grad = False
 		num_features = self.backbone.fc.in_features
 
 		self.backbone.fc = nn.Identity() # what is this ?
 
 		self.head = nn.Sequential(
 			nn.Linear(num_features, 256),
-			nn.ReLu(),
+			nn.ReLU(),
 			nn.Dropout(0.1),
 			nn.Linear(256, output_dim)
 			)
 
-		def forward(self, x):
-			features = self.backbone(x)
-			return self.head(features)
+	def forward(self, x):
+		features = self.backbone(x)
+		return self.head(features)
+
+	def train(self, mode=True):
+		super().train(mode)
+		if not self.train_backbone:
+			self.backbone.eval()
 
 def angle_penalty_loss(pred, gt, eps=1e-5):
 	"""
@@ -660,6 +674,7 @@ if __name__ == "__main__":
 	parser.add_argument("--auth_input_dir", type=str, nargs='+') # this will be augmented additionally. 
 	parser.add_argument("--synth_labels_dir", type=str, nargs='+')
 	parser.add_argument("--auth_labels_dir", type=str, nargs='+')
+	parser.add_argument("--synth_adaptive_size", action=argparse.BooleanOptionalAction, default=False)
 
 	parser.add_argument("--with_bright", action=argparse.BooleanOptionalAction)
 	parser.add_argument("--train_size", type=float, default=0.75)
@@ -673,7 +688,7 @@ if __name__ == "__main__":
 	parser.add_argument("--angle_penalty", type=float, default=5)
 	parser.add_argument("--input_size", default=224, type=int)
 	parser.add_argument("--loss", type=str, default='mse')
-	parser.add_argument("--cas", action=argparse.BooleanOptionalAction)
+	parser.add_argument("--cas", action=argparse.BooleanOptionalAction, default=False)
 
 	parser.add_argument("--name", type=str)
 	parser.add_argument("--load_from_checkpoint", action=argparse.BooleanOptionalAction)
@@ -685,6 +700,7 @@ if __name__ == "__main__":
 
 	parser.add_argument("--test_run", action=argparse.BooleanOptionalAction)
 	parser.add_argument("--test_run_marker", type=str)
+	parser.add_argument("--debug_mode", action=argparse.BooleanOptionalAction, default=False)
 	args = parser.parse_args()
 
 	# TODO ADD A ROUTER FOR TRAINING
@@ -722,7 +738,12 @@ if __name__ == "__main__":
 			convert_to_cas=args.cas,
 			normalised_labels=True,
 			input_size=args.input_size,
-			keep_orig_bb=True)
+			keep_orig_bb=True,
+			print_labels_for_test=args.debug_mode)
+
+	if args.synth_adaptive_size:
+		print("will read synthetic images with adaptive size")
+		synth_chess_dataset_kwargs['adaptive_size'] = True
 
 	auth_chess_dataset_kwargs = deepcopy(synth_chess_dataset_kwargs)
 	auth_chess_dataset_kwargs['adaptive_size'] = True

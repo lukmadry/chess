@@ -5,6 +5,9 @@ from helpers import canonical_corner_order
 
 test_args = {'dates': } # needed to pass date argument
 
+def my_assert(cond):
+
+
 # correct loading of ChessDataset and labels
 def _get_min_max_of_label(lb):
 	mmin, mmax = np.inf, -np.inf
@@ -36,7 +39,6 @@ def test_variants_of_dataset_load(image_dir, adaptive_dir):
 		im, lab = cd_adaptive_norm[i]
 		mmin, mmax = _get_min_max_of_label(lab)
 		assert(mmin >= 0 and mmax < 1.001)
-		assert()
 
 	cd_adaptive_not_norm = ChessDataset(adaptive_dir, convert_to_cas=False, normalised_labels=False, size=100, adaptive_size=True)
 
@@ -103,3 +105,5 @@ def test_square_angle_loss(squares, almost_squares, not_squares):
 	pass
 
 # test if anisothropic loss changes regime where you'd like to
+
+if __name__ == '__main__':
