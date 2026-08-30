@@ -8,6 +8,8 @@ import json
 import torch
 import argparse
 import datetime
+import pickle
+
 from itertools import chain
 from random import choices, sample
 from functools import partial
@@ -460,6 +462,7 @@ def _print_stats_of_gradient(grad_dict):
 # these two can be probably merged somehow but I think it would decrease readability if done hastily
 def train_loop(dataloader, model, base_loss_fn, optimizer, angle_penalty_weight=0.5, batch_size=32):
 	size = len(dataloader.dataset)
+	num_batches = len(dataloader)
 	model.train()
 
 	grad_dict = {}
@@ -469,6 +472,7 @@ def train_loop(dataloader, model, base_loss_fn, optimizer, angle_penalty_weight=
 			for stat in ['mean', 'std', 'max', 'min']:
 				grad_dict[name][stat] = []
 
+	total_loss = 0
 	for batch, (X, y) in enumerate(dataloader):
 		# Compute prediction and loss
 		pred = model(X)
@@ -482,18 +486,24 @@ def train_loop(dataloader, model, base_loss_fn, optimizer, angle_penalty_weight=
 		optimizer.zero_grad() # resetting gradients
 
 		if batch % 5 == 0:
-			loss, current = loss.item(), batch * batch_size + len(X)
+			current =batch * batch_size + len(X)
 			print(f"MSE loss: {mse_loss.item():>7f}  [{current:>5d}/{size:>5d}]")
 			print(f"Square angle loss: {square_angles.item():>7f}\nAngle similarity loss: {cos_sim.item():>7f}")
 
+		loss_item = loss.item()
+		total_loss += loss_item
+
 	_print_stats_of_gradient(grad_dict)
-	return grad_dict
+	total_loss /= num_batches
+	return grad_dict, total_loss
 
 def train_loop_cas(dataloader, model, base_loss_fn, optimizer, batch_size=32, angle_penalty_weight=1.):
 	size = len(dataloader.dataset)
+	num_batches = len(dataloader)
 	model.train()
 
 	grad_dict = {}
+	total_loss = 0
 	for name, param in model.named_parameters():
 		if param.requires_grad:
 			grad_dict[name] = {}
@@ -511,13 +521,18 @@ def train_loop_cas(dataloader, model, base_loss_fn, optimizer, batch_size=32, an
 		optimizer.step()
 		optimizer.zero_grad()
 
+		loss_item = loss.item()
 		if batch % 5 == 0:
-			loss, current = loss.item(), batch * batch_size + len(X)
-			print(f"Total MSE loss: {loss:>7f}   [{current:>5d}/{size:>5d}]")
+			current = batch * batch_size + len(X)
+			print(f"Total MSE loss: {loss_item:>7f}   [{current:>5d}/{size:>5d}]")
 			print(f"Center loss: {mse_loss_center.item():>7f}\nSize loss: {mse_loss_size.item():>7f}\nAngle loss: {mse_loss_angle.item():>7f}")
 
+		
+		total_loss += loss_item
+
 	_print_stats_of_gradient(grad_dict)
-	return grad_dict
+	total_loss /= num_batches
+	return grad_dict, total_loss
 
 # to be rewritten, or at least API of sample_raw_images will have to be
 def _image_dumper(model, dataloader, grid, model_for_cas, fig_dir, **kwargs):
@@ -698,12 +713,14 @@ if __name__ == "__main__":
 
 	parser.add_argument("--augmentation_factor", default=1, type=int)
 
+	# some admin args
 	parser.add_argument("--test_run", action=argparse.BooleanOptionalAction)
 	parser.add_argument("--test_run_marker", type=str)
 	parser.add_argument("--debug_mode", action=argparse.BooleanOptionalAction, default=False)
+	parser.add_argument("--commit_hash", type=str)
+	parser.add_argument("--dump_images", action=argparse.BooleanOptionalAction, default=True)
 	args = parser.parse_args()
 
-	# TODO ADD A ROUTER FOR TRAINING
 	if args.synth_input_dir is None and args.auth_input_dir is None:
 		raise ValueError("you need to pass at least one of synth_input_dir or auth_input_dir")
 
@@ -852,16 +869,24 @@ if __name__ == "__main__":
 	start_epoch = args.epoch_to_restart + 1
 	# base_chckpt_path = os.path.dirname(chckpt_path)
 
-	errors = []
+	with open(os.path.join(chckpt_path, "kwargs"), "w") as f:
+		json.dump(vars(args), f, default=str)
 	for t in range(start_epoch, start_epoch + args.epochs):
 		print(f"Epoch: {t+1}\n----------------")
-		train_loop_fn(train_loader, regressor, base_loss_fn=loss_fn, optimizer=optimizer, angle_penalty_weight=args.angle_penalty)
-		
+		_, train_loss = train_loop_fn(train_loader, regressor, base_loss_fn=loss_fn, optimizer=optimizer, angle_penalty_weight=args.angle_penalty)
+		epoch_error = {}
+		epoch_error['train'] = train_loss
 		for title, val_loader in val_loaders:
 			print(f"Currently evaluating val: {title}")
 			path_image = os.path.join(chckpt_path, f"grid_epoch_{title}_{t+1}.png")
 			val_loss, val_pixel_error_axis_one, val_pixel_error_axis_two = test_loop_fn(val_loader, regressor, 
-				base_loss_fn=loss_fn, angle_penalty_weight=args.angle_penalty, dump_image=True, dump_image_path=path_image)
+				base_loss_fn=loss_fn, angle_penalty_weight=args.angle_penalty, 
+				dump_image=args.dump_images, dump_image_path=path_image)
+			epoch_error[title] = {
+			'val_loss': val_loss, 
+			'val_pixel_error_axis_one': val_pixel_error_axis_one, 
+			'val_pixel_error_axis_two': val_pixel_error_axis_two}
+
 		checkpoint = {
 			"epoch": t,
 			"model_state_dict": regressor.state_dict(),
@@ -872,6 +897,8 @@ if __name__ == "__main__":
 			# 'loss': val_loss,
 		}
 		torch.save(checkpoint, os.path.join(chckpt_path, f"epoch_{t}.pth"))
+		with open(os.path.join(chckpt_path, f"errors_epoch_{t}.pth"), "wb") as f:
+			pickle.dump(epoch_error, f)
 		scheduler.step(val_pixel_error_axis_one + val_pixel_error_axis_two)
 		print(f"Current learning rate: {optimizer.param_groups[0]['lr']}")
 

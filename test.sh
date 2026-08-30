@@ -6,11 +6,13 @@ HS_CHESSBOARD_STATUS_FILE="test_status_files/half_synth_${DATE_STR}.txt"
 TRAININGCAS_STATUS_FILE="test_status_files/training_cas_${DATE_STR}.txt"
 TRAININGCAS_LOAD_STATUS_FILE="test_status_files/training_cas_load_${DATE_STR}.txt"
 TRAININGBB_STATUS_FILE="test_status_files/training_bb_${DATE_STR}.txt"
+TRAININGBB_RESNET_STATUS_FILE="test_status_files/training_bb_resnet_${DATE_STR}.txt"
 TRAININGBB_LOAD_STATUS_FILE="test_status_files/training_bb_load_${DATE_STR}.txt"
 
 TRAINING_AUTH_STATUS_FILE="test_status_files/training_bb_auth_${DATE_STR}.txt"
 TRAINING_SYNT_AND_AUTH_STATUS_FILE="test_status_files/training_bb_synth_auth_${DATE_STR}.txt"
 TRAINING_TSYNT_AND_AUTH_STATUS_FILE="test_status_files/training_bb_two_synth_auth_${DATE_STR}.txt"
+TRAINING_TSYNT_AND_AUTH_NOIMG_STATUS_FILE="test_status_files/training_bb_two_synth_auth_noimg_${DATE_STR}.txt"
 
 COMMIT_FILE="test_status_files/commit_test.txt"
 touch "${COMMIT_FILE}"
@@ -67,7 +69,6 @@ else
 	RESULTS+=(0)
 fi
 
-
 python training.py --test_run --test_run_marker $TRAININGCAS_LOAD_STATUS_FILE --load_from_checkpoint --last_model_date $DATE_STR --synth_input_dir chessboard_augment_low_yaw --model mobile --cas --input_size 224 --epoch_to_restart 2 --size 100 --epochs 2
 if [ -f "${TRAININGCAS_LOAD_STATUS_FILE}" ] && [ "$(cat "${TRAININGCAS_LOAD_STATUS_FILE}")" = "SUCCESS" ]; then
 	echo "SUCCESS: center-angle-size training with loading from checkpoint worked" >&3
@@ -95,6 +96,16 @@ else
 	RESULTS+=(0)
 fi
 
+python training.py --test_run --test_run_marker $TRAININGBB_RESNET_STATUS_FILE --synth_input_dir chessboard_augment_low_yaw --synth_labels_dir chessboard_augment_low_yaw/ground_truths --model resnet --no-cas --input_size 224 --epochs 2 --size 100
+if [ -f "${TRAININGBB_RESNET_STATUS_FILE}" ] && [ "$(cat "${TRAININGBB_RESNET_STATUS_FILE}")" = "SUCCESS" ]; then
+	echo "SUCCESS: bounding box training with resnet worked" >&3
+	RESULTS+=(1)
+else
+	echo "FAILURE: bounding box training with resnet" >&3
+	RESULTS+=(0)
+fi
+
+
 echo "testing training on authentic data only" >&3
 python training.py --test_run --test_run_marker $TRAINING_AUTH_STATUS_FILE --auth_input_dir images_to_annotate --model mobile --no-cas --input_size 224 --epochs 2 --size 100
 if [ -f "${TRAINING_AUTH_STATUS_FILE}" ] && [ "$(cat "${TRAINING_AUTH_STATUS_FILE}")" = "SUCCESS" ]; then
@@ -105,8 +116,7 @@ else
 	RESULTS+=(0)
 fi
 
-echo "testing training on synth + training"
-
+echo "testing training on synth + training" >&3
 python training.py --test_run --test_run_marker $TRAINING_SYNT_AND_AUTH_STATUS_FILE --synth_input_dir chessboard_augment_low_yaw --auth_input_dir images_to_annotate --model mobile --no-cas --input_size 224 --epochs 2 --size 100
 if [ -f "${TRAINING_SYNT_AND_AUTH_STATUS_FILE}" ] && [ "$(cat "${TRAINING_SYNT_AND_AUTH_STATUS_FILE}")" = "SUCCESS" ]; then
 	echo "SUCCESS: bb training on synth+authentic data worked worked" >&3
@@ -116,10 +126,20 @@ else
 	RESULTS+=(0)
 fi
 
-echo "combining two synth datasets and one auth"
+echo "combining two synth datasets and one auth" >&3
 python training.py --test_run --test_run_marker $TRAINING_TSYNT_AND_AUTH_STATUS_FILE --synth_input_dir chessboard_augment_low_yaw halfsynth_chessboards --auth_input_dir images_to_annotate --synth_adaptive_size --model mobile --no-cas --input_size 224 --epochs 2 --size 100
 if [ -f "${TRAINING_TSYNT_AND_AUTH_STATUS_FILE}" ] && [ "$(cat "${TRAINING_TSYNT_AND_AUTH_STATUS_FILE}")" = "SUCCESS" ]; then
 	echo "SUCCESS: bb training on two synth+authentic data worked worked" >&3
+	RESULTS+=(1)
+else
+	echo "FAILURE: bb training on two synth+authentic data" >&3
+	RESULTS+=(0)
+fi
+
+echo "combining two synth datasets and one auth with no image dumping" >&#
+python training.py --test_run --test_run_marker $TRAINING_TSYNT_AND_AUTH_NOIMG_STATUS_FILE --synth_input_dir chessboard_augment_low_yaw halfsynth_chessboards --auth_input_dir images_to_annotate --synth_adaptive_size --model mobile --no-cas --input_size 224 --no-dump_images --epochs 2 --size 100
+if [ -f "${TRAINING_TSYNT_AND_AUTH_NOIMG_STATUS_FILE}" ] && [ "$(cat "${TRAINING_TSYNT_AND_AUTH_NOIMG_STATUS_FILE}")" = "SUCCESS" ]; then
+	echo "SUCCESS: bb training on two synth+authentic data worked worked with no image dumping" >&3
 	RESULTS+=(1)
 else
 	echo "FAILURE: bb training on two synth+authentic data" >&3
@@ -147,5 +167,6 @@ rm $TRAININGBB_STATUS_FILE
 rm $TRAININGBB_LOAD_STATUS_FILE
 rm $TRAINING_AUTH_STATUS_FILE
 rm $TRAINING_SYNT_AND_AUTH_STATUS_FILE
+rm $TRAININGBB_RESNET_STATUS_FILE
 
 echo "DELETED ALL THE TEMPORARY FILES" >&3
