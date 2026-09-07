@@ -536,6 +536,10 @@ def train_loop_cas(dataloader, model, base_loss_fn, optimizer, batch_size=32, an
 
 # to be rewritten, or at least API of sample_raw_images will have to be
 def _image_dumper(model, dataloader, grid, model_for_cas, fig_dir, **kwargs):
+	# according to a jupyter notebook findings, try to implement checking instances to recognize if this is ConcatDataset or not
+	# I think that checking indices will have to stay if you want to pick the original datasets, the question is do you still want to do it
+	# especially that you render from much smaller pictures anyway, so maybe there's no point and you can just pick input images
+	# and make sure that ground truths are properly rescaled
 	val_indices = dataloader.dataset.indices
 	if hasattr(dataloader.dataset, 'dataset'):
 		orig_dataset = dataloader.dataset.dataset
@@ -549,6 +553,7 @@ def _image_dumper(model, dataloader, grid, model_for_cas, fig_dir, **kwargs):
 		impose_size=None)
 	image_for_model = [orig_dataset._input_transform(x) for x in display_images_grid]
 	image_for_model = torch.stack(image_for_model)
+
 	display_grid_with_labels(
 			model=model, 
 			display_images=display_images_grid, 
@@ -749,6 +754,7 @@ if __name__ == "__main__":
 	else:
 		raise NotImplementedError
 
+	print(f"Will train on the network {args.model}")
 	synth_chess_dataset_kwargs = dict(
 			with_bright=args.with_bright, 
 			size=args.size,
