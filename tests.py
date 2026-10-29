@@ -1,13 +1,12 @@
 import sys
+import numpy as np
 
-from training import ChessDataset
-from helpers import canonical_corner_order
+from src.dataset import ChessDataset
+from src.helpers.tools import canonical_corner_order
 
-test_args = {'dates': } # needed to pass date argument
+# test_args = {'dates': } # needed to pass date argument
 
-def my_assert(cond):
-
-
+# TODO
 # correct loading of ChessDataset and labels
 def _get_min_max_of_label(lb):
 	mmin, mmax = np.inf, -np.inf
@@ -55,13 +54,7 @@ test_variants_of_dataset_load("chessboard_augment_very_low_yaw_with_pieces", "im
 
 # test if loading a model from checkpoint works correctly
 # test.sh should be run after test passages so you should provide the date to test
-# TODO provide some examples with erroneous arguments to make sure that you catch errors
-def test_loading_a_model(correct_dates_to_test, correct_epochs, incorrect_dates, incorrect_epochs):
-	for d in dates_to_test:
-		model_chckpt_path = model_path_from_date(d, )
 
-
-# test if augmentation works
 
 
 # test of canonical order
@@ -100,10 +93,3 @@ reorder = [
 test_canonical_order_of_labels(unchanged_labels, reversed_labels, permuted_labels, reorder)
 # test if bb -> cas -> bb works correctly
 
-# test if angle losses work correctly
-def test_square_angle_loss(squares, almost_squares, not_squares):
-	pass
-
-# test if anisothropic loss changes regime where you'd like to
-
-if __name__ == '__main__':

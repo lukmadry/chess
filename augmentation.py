@@ -10,7 +10,7 @@ from random import choice, sample, choices
 from functools import partial
 from PIL import Image
 
-from helpers import none_sentinel
+from src.helpers.tools import none_sentinel
 
 
 # base functions
