@@ -36,7 +36,7 @@ _____
 
 Results:
 
-one can inspect some results in `checkpoints`, where I left some pictures of how network is performing. 
+one can inspect some results in `public_checkpoints`, where I left some pictures of how network is performing. 
 Generated data can be checked in `public_data/samples`.
 
 
