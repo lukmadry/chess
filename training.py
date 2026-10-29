@@ -14,6 +14,7 @@ from itertools import chain
 from random import choices, sample
 from functools import partial
 from copy import deepcopy
+from numbers import Number
 
 from PIL import Image
 from torch import nn
@@ -21,7 +22,7 @@ from torch.utils.data import DataLoader, Dataset, random_split, ConcatDataset
 from torchvision.models import resnet34, ResNet34_Weights, resnet50, ResNet50_Weights, mobilenet_v3_small, MobileNet_V3_Small_Weights
 from torchvision import transforms
 
-from helpers import display_grid_with_labels, convert_boxes_to_cas, cas_to_boxes, model_path_from_date, canonical_corner_order
+from helpers import display_grid_with_labels, convert_boxes_to_cas, cas_to_boxes, model_path_from_date, canonical_corner_order, _get_min_max_of_label
 from augmentation import final_image_shifts_dict
 
 # TODO move some stuff to a separate file, loss functions to losses.py, training and testing loops to loops.py or sth
@@ -96,24 +97,28 @@ class ChessDataset(Dataset):
 		self.images_list = self._filter_images_with_no_labels()
 		print(f"After filtering we have {len(self.images_list)} images")
 		self.labels = []
-		self.height = height
-		self.width = width
-		self.adaptive_size = adaptive_size # in this case we will always normalise to [0,1], but not here, only later in __getitem__
+		self.adaptive_size = adaptive_size # in this case we will always normalise to [0,1]
 		self.normalised_labels = normalised_labels
 
 		if adaptive_size:
-			normalised_labels = False
+			# normalised_labels = False
 			self.normalised_labels = True # weird and counterintuitive, TODO to be cleaned up
+			self.image_sizes = []
+		else:
+			self.height = height
+			self.width = width
 
-		if not convert_to_cas and normalised_labels:
+		if not convert_to_cas and self.normalised_labels:
 			for l in self.images_list:
 				local_lab = []
+				with Image.open(l) as img:
+					width, height = img.size
 				labels_dict = self._load_labels_dict(l)
 
 				for (x, y) in labels_dict["inner_board"]:
 					local_lab.append([float(x)/height, float(y)/width])#  ([[float(x)/480., float(y)/640.] for (x,y) in labels_dict["inner_board"]])
 				self.labels.append(local_lab)
-		elif not convert_to_cas and not normalised_labels: 
+		elif not convert_to_cas and not self.normalised_labels: 
 			for l in self.images_list:
 				local_lab = []
 				labels_dict = self._load_labels_dict(l)
@@ -152,7 +157,7 @@ class ChessDataset(Dataset):
 		if convert_to_cas and verify_angle and normalised_labels: # to make sure that we do not have angles outside of the prescribed range
 			for l in self.labels:
 				if abs(l[-1]) > 1 + 1e-4:
-					raise ValueError("angle outside of proposed range") 
+					raise ValueError("labels did not convert to the normalised format") 
 		elif convert_to_cas and verify_angle:
 			for l in self.labels:
 				if abs(l[-1]) > max_angle_rad + 1e-1: # a bit of leniency is accepted
@@ -185,14 +190,14 @@ class ChessDataset(Dataset):
 		# rename to synth get item ? either case you'll need to branch it
 		im = Image.open(self.images_list[idx])
 		_lab = self.labels[idx]
-		if self.adaptive_size:
-			width, height = im.size
-			lab = []
-			for (x, y) in _lab:
-				lab.append([float(x)/height, float(y)/width])
-		else:
-			lab = _lab
-		lab = np.array(lab).flatten()
+		# if self.adaptive_size:
+		# 	width, height = im.size
+		# 	lab = []
+		# 	for (x, y) in _lab:
+		# 		lab.append([float(x)/height, float(y)/width])
+		# else:
+		# 	lab = _lab
+		lab = np.array(_lab).flatten()
 		# lab = canonical_corner_order(lab)
 		lab = torch.tensor(lab, dtype=torch.float32)
 
@@ -266,6 +271,30 @@ class ChessDataset(Dataset):
 
 		# images = np.array(images)
 		return images, labels
+
+	@property
+	def height(self):
+		if self.adaptive_size:
+			raise ValueError("adaptive_size is set to True, therefore images may have different sizes. Attribute .height not available")
+		return self._height
+
+	@height.setter
+	def height(self, val):
+		if not isinstance(val, Number) or val < 0:
+			raise ValueError
+		self._height = val
+
+	@property
+	def width(self):
+		if self.adaptive_size:
+			raise ValueError("adaptive_size is set to True, therefore images may have different sizes. Attribute .width not available")
+		return self._width
+
+	@width.setter
+	def width(self, val):
+		if not isinstance(val, Number) or val < 0:
+			raise ValueError
+		self._width = val
 
 class CleanChessDatasetWrapper(Dataset):
 	def __init__(self, subset, input_size=224, normalise=True, swap_labels=True):
@@ -487,7 +516,7 @@ def train_loop(dataloader, model, base_loss_fn, optimizer, angle_penalty_weight=
 
 		if batch % 5 == 0:
 			current =batch * batch_size + len(X)
-			print(f"MSE loss: {mse_loss.item():>7f}  [{current:>5d}/{size:>5d}]")
+			print(f"Main loss loss: {mse_loss.item():>7f}  [{current:>5d}/{size:>5d}]")
 			print(f"Square angle loss: {square_angles.item():>7f}\nAngle similarity loss: {cos_sim.item():>7f}")
 
 		loss_item = loss.item()
@@ -535,35 +564,44 @@ def train_loop_cas(dataloader, model, base_loss_fn, optimizer, batch_size=32, an
 	return grad_dict, total_loss
 
 # to be rewritten, or at least API of sample_raw_images will have to be
-def _image_dumper(model, dataloader, grid, model_for_cas, fig_dir, **kwargs):
-	# according to a jupyter notebook findings, try to implement checking instances to recognize if this is ConcatDataset or not
-	# I think that checking indices will have to stay if you want to pick the original datasets, the question is do you still want to do it
-	# especially that you render from much smaller pictures anyway, so maybe there's no point and you can just pick input images
-	# and make sure that ground truths are properly rescaled
+def _image_dumper(model, dataloader, grid, model_for_cas, fig_dir,  **kwargs):
+
+	# dataset = dataloader.dataset
+	# val_idx = choices(range(len(dataloader)), k=grid**2)
+	# # we will force normalisation of labels and turn it off later
+	# raw_images, target_grid = dataset.sample_raw_images(grid**2)
+	# images_for_model = [dataset._input_transform(im) for im in raw_images]
+	# for targets in target_grid:
+	# 	if max(targets) > 1.001: # leaving a bit of a margin
+	# 		raise NotImplementedError("A label that is not normalised found during the image dumping procedure.")
+
 	val_indices = dataloader.dataset.indices
 	if hasattr(dataloader.dataset, 'dataset'):
 		orig_dataset = dataloader.dataset.dataset
 	else:
 		orig_dataset = dataloader.dataset.subset.dataset
 
+	print("normalised labels: ", orig_dataset.normalised_labels)
 	display_images_grid, target_grid = orig_dataset.sample_raw_images(int(grid**2), 
 		indices=val_indices, 
-		normalized_targets=False, 
+		normalized_targets=True, 
 		sample_orig_bb=True, 
 		impose_size=None)
 	image_for_model = [orig_dataset._input_transform(x) for x in display_images_grid]
 	image_for_model = torch.stack(image_for_model)
+	# print(target_grid)
 
-	display_grid_with_labels(
-			model=model, 
-			display_images=display_images_grid, 
-			image_array=image_for_model, 
-			gt_list=target_grid, 
-			image_grid_size=grid, 
-			show=False, 
-			savefig=True, 
-			fig_dir=fig_dir,
-			model_for_cas=model_for_cas)
+	if not model_for_cas:
+		display_grid_with_labels(
+				model=model, 
+				image_array=image_for_model, 
+				raw_images=display_images_grid,
+				gt_list=target_grid, 
+				image_grid_size=grid,
+				show=False, 
+				savefig=True, 
+				fig_dir=fig_dir,
+				model_for_cas=model_for_cas)
 
 # same caveat about merging here
 # change mentions of mse in case of wing
@@ -613,7 +651,7 @@ def test_loop(dataloader, model, base_loss_fn, angle_penalty_weight=0.5, dump_im
 	pixel_error_axis_one /= (4 * size)
 	pixel_error_axis_two /= (4 * size)
 	print(f"Test Error: \nAvg pixel error height: {(pixel_error_axis_one):>0.1f}\nAvg pixel error width {(pixel_error_axis_two):>0.1f}")
-	print(f"Average loss: {test_loss:>7f}\nAverage MSE loss: {test_mse_loss:>7f}")
+	print(f"Average loss: {test_loss:>7f}\nAverage main loss: {test_mse_loss:>7f}")
 	print(f"\nAverage square angle loss: {test_square_angle_loss:>7f}\nAverage cos sim loss: {test_cos_sim_loss:>7f}")
 	print(f"Predictions are in the range of {min_max_pred}")
 
@@ -630,7 +668,7 @@ def test_loop(dataloader, model, base_loss_fn, angle_penalty_weight=0.5, dump_im
 
 	return {'mse_loss': test_mse_loss, 'square_angles_loss': test_square_angle_loss, 'cos_sim_loss': test_cos_sim_loss}, pixel_error_axis_one, pixel_error_axis_two
 
-def test_loop_cas(dataloader, model, base_loss_fn, angle_penalty_weight=0.5, dump_image=True, grid=3, dump_image_path=None):
+def test_loop_cas(dataloader, model, base_loss_fn, angle_penalty_weight=0.5, dump_image=False, grid=3, dump_image_path=None):
 	model.eval()
 	size = len(dataloader.dataset)
 	num_batches = len(dataloader)
@@ -683,7 +721,8 @@ def test_loop_cas(dataloader, model, base_loss_fn, angle_penalty_weight=0.5, dum
 			image_grid_size=grid, 
 			show=False, 
 			savefig=True, 
-			fig_dir=dump_image_path)
+			fig_dir=dump_image_path,
+			cas=True)
 
 	return {'center_loss': test_center_loss, 'size_loss': test_size_loss, 'angle_loss': test_angle_loss}, pixel_error_axis_one, pixel_error_axis_two
 

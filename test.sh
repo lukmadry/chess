@@ -55,7 +55,7 @@ if [ -f "${HS_CHESSBOARD_STATUS_FILE}" ] && [ "$(cat "${HS_CHESSBOARD_STATUS_FIL
 	echo "SUCCESS: finished generating half synth chessboards" >&3
 	RESULTS+=(1)
 else
-	echo "generating half synth chessboards failed" >&3
+	echo "FAILURE: generating half synth chessboards failed" >&3
 	RESULTS+=(0)
 fi
 

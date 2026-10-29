@@ -52,6 +52,15 @@ def canonical_corner_order(pts, dtype=np.int32):
     
     return canonical_pts.astype(dtype)
 
+def _get_min_max_of_label(lb):
+    mmin, mmax = np.inf, -np.inf
+    for x, y in lb:
+        if mmin < min(x, y):
+            mmin = min(x, y)
+        if mmax > max(x, y):
+            mmax = max(x, y)
+    return mmin, mmax
+
 def vectorise(depth_check = 2):
     if depth_check == 2:
 
@@ -250,6 +259,7 @@ def labels_to_pixels(img, label_set, color='r'):
     cv2.polylines(img, [pixels], isClosed=True, color=color_dict[color], thickness=2)
 
 def gt_to_pixels(img, label_gt, color='g'):
+    img = np.ascontiguousarray(img)
     label_gt = [(row, col) for (col, row) in label_gt]
     pixels = np.array(label_gt).reshape((-1,1,2))
     cv2.polylines(img, [pixels], isClosed=True, color=color_dict[color], thickness=2)
@@ -287,17 +297,34 @@ def load_images(image_dir, image_grid_size, with_ground_truths=True):
         return display_images, image_array, gt_list
     return display_images, image_array
 
+def rescale_normalised_bb(h, w, normalised_bb, final_dtype=None):
+    if len(normalised_bb) == 8:
+        bb_rect_format = list(zip(normalised_bb[0::2], normalised_bb[1::2]))
+    else:
+        bb_rect_format = normalised_bb
+    bb_rect_format = np.array(bb_rect_format)
+    bb_rect_format[:, 0] *= h
+    bb_rect_format[:, 1] *= w
+    if final_dtype is not None:
+        return bb_rect_format.astype(final_dtype)
+    return bb_rect_format
+
 # probably to be rewritten in the future
-def display_grid_with_labels(model, display_images, image_array, gt_list, image_grid_size, epoch=None,
+def display_grid_with_labels(model, image_array, raw_images, gt_list, image_grid_size, epoch=None,
     savefig=False, fig_dir=None, show=True, figsize=9, with_ground_truths=True, model_for_cas=True):
 
     if savefig and fig_dir is None:
         raise ValueError
 
-    regresor = model
-    image_tensor = torch.tensor(image_array)
+    if model_for_cas:
+        raise NotImplementedError("conversion for cas not implemented (there are attempts below but it's buggy)")
 
-    print("max value of image tensor that gets passed to the model: ", image_tensor.max())
+    regresor = model
+    if not isinstance(image_array, torch.FloatTensor):
+        image_tensor = torch.tensor(np.array(image_array)) # for some reason torch.tensor doesn't work for list of tensors
+    else:
+        image_tensor = image_array
+
     regresor.eval()
     with torch.no_grad():
         predictions = regresor(image_tensor)
@@ -307,24 +334,27 @@ def display_grid_with_labels(model, display_images, image_array, gt_list, image_
     image_array = np.transpose(image_array, (0, 2, 3, 1))
 
     if isinstance(gt_list[0], str):
-        gt = [json.load(open(g, "r")) for g in gt_list]
-        gt = [[[y, x] for y, x in g["inner_board"]] for g in gt]
-    else:
-        gt = gt_list
+        raise ValueError("Function display_grid_with_labels demands that gt_list is a list of suitably formatted normalised labels")
 
-    for k, (ax, im) in enumerate(zip(grid, display_images)):
+    for gt in gt_list:
+        gt = np.array(gt)
+        if np.max(gt) > 1.01:
+            raise ValueError("Function display_grid_with_labels accepts only normalised ground truths")
 
+    for k, (ax, im, gt, pred) in enumerate(zip(grid, raw_images, gt_list, predictions)):
         im = np.array(im, dtype=np.uint8)
         h, w = im.shape[:2]
+        gt_image_scale = rescale_normalised_bb(h, w, gt, np.int32) 
+        pred_image_scale = rescale_normalised_bb(h, w, pred, np.int32)
+
         if with_ground_truths and not model_for_cas:
             # print(gt[k])
-            labels_to_pixels(im, predictions[k].detach().numpy())
-            pred_canonical = predictions[k].detach().numpy()
-            pred_canonical = list(zip(pred_canonical[0::2], pred_canonical[1::2]))
-            gt_to_pixels(im, gt[k])
-            axis_one_error = sum([abs(x[0]-y[0]*h) for x, y in zip(gt[k], pred_canonical)])/4
-            axis_two_error = sum([abs(x[1]-y[1]*w) for x, y in zip(gt[k], pred_canonical)])/4
-            print(f"Pixel error: axis one {axis_one_error}, axis two {axis_two_error}")
+            gt_to_pixels(im, pred_image_scale, color='g')
+            gt_to_pixels(im, gt_image_scale, color='r')
+            axis_one_error = np.abs(gt_image_scale[:, 0] - pred_image_scale[:, 0]).sum()/4
+            axis_two_error = np.abs(gt_image_scale[:, 1] - pred_image_scale[:, 1]).sum()/4
+            print(f"Pixel error: axis one {axis_one_error}, axis two {axis_two_error} on a picture of size {h} x {w}")
+
         if with_ground_truths and model_for_cas:
 
             pred_canonical = cas_to_boxes(predictions[k].detach().tolist())
@@ -337,7 +367,7 @@ def display_grid_with_labels(model, display_images, image_array, gt_list, image_
             axis_two_error = sum([abs(x[1] - y[1]) for x, y in zip(gt_canonical, pred_canonical)])/4
             print(f"Pixel error: axis one {axis_one_error}, axis two {axis_two_error}")
 
-        im = cv2.resize(im, (224, 224))
+        # im = cv2.resize(im, (224, 224))
         ax.imshow(im)
     if savefig:
         fig.savefig(fname=fig_dir)
